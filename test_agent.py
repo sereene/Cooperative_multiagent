@@ -346,7 +346,8 @@ if __name__ == "__main__":
             frac = 1.0 - (update - 1.0) / num_updates
             lr_now = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lr_now
-
+            
+        #롤아웃 반복
         for step in range(args.num_steps):
             global_step += args.num_envs
 
@@ -355,6 +356,7 @@ if __name__ == "__main__":
             truncations[step] = next_truncation
 
             # 정책에서 action sample
+            # 학습이 아니라 rollout이니까 역전파X
             with torch.no_grad():
                 action, logprob, _, value = agent.get_action_and_value(next_obs)
                 values[step] = value.view(-1)
@@ -367,7 +369,6 @@ if __name__ == "__main__":
                 action.cpu().numpy()
             )
             
-    
             rewards[step] = torch.tensor(
                 reward_np, dtype=torch.float32, device=device
             ).view(-1)
@@ -388,17 +389,18 @@ if __name__ == "__main__":
         with torch.no_grad():
             next_value = agent.get_value(next_obs).reshape(1, -1)
             advantages = torch.zeros_like(rewards, device=device)
-            lastgaelam = 0.0
+            lastgaelam = 0.0 #lamba buffer
 
             next_done = torch.maximum(next_termination, next_truncation)
             dones = torch.maximum(terminations, truncations)
             
             td_errors = torch.zeros((args.num_steps, args.num_envs), device=device)
 
+            # GAE는 뒤에서부터 역순 계산
             for t in reversed(range(args.num_steps)):
                 if t == args.num_steps - 1:
                     next_nonterminal = 1.0 - next_done
-                    next_values = next_value
+                    next_values = next_value # 마지막 timestamp일때 값, 부트스트랩 값
                 else:
                     next_nonterminal = 1.0 - dones[t + 1]
                     next_values = values[t + 1]
@@ -420,6 +422,8 @@ if __name__ == "__main__":
             returns = advantages + values
 
         #  Flatten batch
+        # 지금까지 저장한 리스트는 구조상: [step][envs, values…]
+        # 이 리스트들을 torch.stack 으로 텐서(batch) 형태로 변환
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
@@ -435,12 +439,12 @@ if __name__ == "__main__":
             np.random.shuffle(b_inds)
             for start in range(0, args.batch_size, args.minibatch_size):
                 end = start + args.minibatch_size
-                mb_inds = b_inds[start:end]
+                mb_inds = b_inds[start:end] # 배치 인덱스를 랜덤하게 섞음
 
                 _, newlogprob, entropy, newvalue = agent.get_action_and_value(
                     b_obs[mb_inds], b_actions.long()[mb_inds]
                 )
-                logratio = newlogprob - b_logprobs[mb_inds]
+                logratio = newlogprob - b_logprobs[mb_inds] #정책 변화율
                 ratio = logratio.exp()
 
                 with torch.no_grad():
@@ -453,18 +457,18 @@ if __name__ == "__main__":
                         .item()
                     )
 
-                mb_adv = b_advantages[mb_inds]
-                if args.norm_adv:
+                mb_adv = b_advantages[mb_inds] 
+                if args.norm_adv: #advantage 정규화
                     mb_adv = (mb_adv - mb_adv.mean()) / (mb_adv.std() + 1e-8)
 
-                # Policy loss
+                # Clipped Policy loss 계산
                 pg_loss1 = -mb_adv * ratio
                 pg_loss2 = -mb_adv * torch.clamp(
                     ratio, 1 - args.clip_coef, 1 + args.clip_coef
                 )
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
-                # Value loss
+                # Value loss 계산
                 newvalue = newvalue.view(-1)
                 if args.clip_vloss:
                     v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
@@ -479,6 +483,8 @@ if __name__ == "__main__":
                     v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
 
                 entropy_loss = entropy.mean()
+
+                #최종 loss 계산
                 loss = (
                     pg_loss
                     - args.ent_coef * entropy_loss
