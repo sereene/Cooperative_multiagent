@@ -53,13 +53,6 @@ def parse_args():
         default="cleanRL",
         help="wandb 프로젝트 이름",
     )
-    parser.add_argument(
-        "--wandb-entity",
-        type=str,
-        default=None,
-        help="wandb 팀/엔티티 이름",
-    )
-
     # 하이퍼파라미터
     parser.add_argument(
         "--total-timesteps",
@@ -97,7 +90,7 @@ def parse_args():
         "--gamma",
         type=float,
         default=0.99,
-        help="discount factor γ",
+        help="discount factor γ(할인율)",
     )
     parser.add_argument(
         "--gae-lambda",
