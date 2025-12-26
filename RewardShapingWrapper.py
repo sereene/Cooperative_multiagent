@@ -7,95 +7,81 @@ class RewardShapingWrapper(BaseParallelWrapper):
     def __init__(self, env):
         super().__init__(env)
 
-        # CooperativePong 객체 정확히 가져오기
-        # parallel_env.env.env = CooperativePong 인스턴스
+        # CooperativePong 객체 가져오기
         try:
             self.game = self.env.env.env
         except:
             self.game = self.env.unwrapped.env
 
-        self.previous_potentials = {}
-        self.gamma = 0.99
-
-    def _get_potential(self, agent_id):
-
-        # 공 중심 좌표
-        ball_center = np.array(self.game.ball.rect.center)
-
-        # 패들 좌표 (CakePaddle 또는 Paddle 모두 지원)
-        if agent_id == self.game.agents[0]:  # paddle_0
-            paddle_obj = self.game.p0
-        else:  # paddle_1
-            paddle_obj = self.game.p1
-
-        if hasattr(paddle_obj, "rects"):
-            paddle_center = np.array(paddle_obj.rects[0].center)
-        else:
-            paddle_center = np.array(paddle_obj.rect.center)
+        # 1. 화면 크기 가져오기
+        self.screen_width = getattr(self.game, 'width', 800)
+        self.screen_height = getattr(self.game, 'height', 600)
         
-        #잠재 함수(Potential) 계산: 공과 패들의 거리가 가까울수록 높은 값(0에 근접)을 가짐
-        #Potential = -Distance * Scale
+        # 2. 기준 거리 설정
+        # Termination(실점) 시에는 공과 패들의 X좌표가 거의 같으므로,
+        # Y축 차이가 중요--> 정규화 기준을 '화면 높이'로 설정
+        self.max_dist_threshold = float(self.screen_height)
 
-        # 공과 패들 간의 유클리드 거리 계산
-        dist = np.linalg.norm(ball_center - paddle_center)
-
-        return -dist * 0.01
+    def _get_center(self, obj):
+        """객체의 중심 좌표를 반환하는 헬퍼 함수"""
+        if hasattr(obj, "rects"):
+            return np.array(obj.rects[0].center)
+        return np.array(obj.rect.center)
 
     def reset(self, seed=None, options=None):
-        obs, infos = self.env.reset(seed=seed, options=options)
-
-        self.previous_potentials = {
-            agent: self._get_potential(agent) for agent in self.env.agents
-        }
-
-        return obs, infos
+        return self.env.reset(seed=seed, options=options)
 
     def step(self, actions):
-
         obs, rewards, terminations, truncations, infos = self.env.step(actions)
 
-        # 공 위치 rect 가져오기
+        # 1. 충돌 보상 (기존 로직 유지, 0.5)
         ball_rect = self.game.ball.rect
-
-        # paddle rects 가져오기
-        if hasattr(self.game.p0, "rects"):
-            paddle0_rect = self.game.p0.rects[0]
-        else:
-            paddle0_rect = self.game.p0.rect
-
-        if hasattr(self.game.p1, "rects"):
-            paddle1_rect = self.game.p1.rects[0]
-        else:
-            paddle1_rect = self.game.p1.rect
-
-        paddles = {
-            self.game.agents[0]: paddle0_rect,
-            self.game.agents[1]: paddle1_rect
+        
+        paddle_objs = {
+            self.game.agents[0]: self.game.p0,
+            self.game.agents[1]: self.game.p1
         }
-
+        
+        paddles_rect = {}
+        for agent_id, p_obj in paddle_objs.items():
+            if hasattr(p_obj, "rects"):
+                paddles_rect[agent_id] = p_obj.rects[0]
+            else:
+                paddles_rect[agent_id] = p_obj.rect
+        
         for agent in self.env.agents:
+            if agent in rewards:
+                if ball_rect.colliderect(paddles_rect[agent]):
+                    rewards[agent] += 0.5
 
-            if agent not in rewards: #reward가 없는 경우
-                continue
+        # 2. 에피소드 종료(Termination) 시 거리 기반 보상
+        is_terminated = any(terminations.values())
 
-            # potential based reward shaping 계산
-            current_potential = self._get_potential(agent)
-            prev_potential = self.previous_potentials.get(agent, current_potential)
+        if is_terminated:
+            ball_center = np.array(ball_rect.center)
+            screen_center_x = self.screen_width / 2
+            
+            responsible_agent = None
 
-            # 변화량 계산 (이전보다 가까워지면 +, 멀어지면 -)
-            potential_reward = (self.gamma * current_potential) - prev_potential
-
-            collision_reward = 0.0
-            if ball_rect.colliderect(paddles[agent]):
-                collision_reward = 0.5 # 패들과 공이 충돌 시 추가 보상
-
-            # 충돌 보상과 거리 기반 잠재 보상 합산
-            total_shaping = potential_reward + collision_reward
-
-            # 최종 보상에 reward shaping 추가
-            rewards[agent] += total_shaping
-
-            # 이전 잠재 함수 값 업데이트
-            self.previous_potentials[agent] = current_potential
+            # 공이 어느 쪽 구역에 있는지를 기준으로 책임 에이전트 선정
+            if ball_center[0] < screen_center_x:
+                responsible_agent = self.env.agents[0] # 왼쪽
+            else:
+                responsible_agent = self.env.agents[1] # 오른쪽
+            
+            # 책임자가 있고 보상 딕셔너리에 존재할 경우
+            if responsible_agent and responsible_agent in rewards:
+                paddle_center = self._get_center(paddle_objs[responsible_agent])
+                
+                # 거리 계산 (Termination 시에는 사실상 Y축 거리 차이와 유사)
+                dist = np.linalg.norm(ball_center - paddle_center)
+                
+                max_reward = 3.0
+                
+                # 기준 거리(screen_height)보다 가까울 때만 보상 지급
+                if dist < self.max_dist_threshold:
+                    # 거리가 0에 가까울수록 max_reward, 멀어지면 0으로 선형 감소
+                    dist_reward = max_reward * (1.0 - (dist / self.max_dist_threshold))
+                    rewards[responsible_agent] += dist_reward
 
         return obs, rewards, terminations, truncations, infos
