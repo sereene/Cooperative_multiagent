@@ -18,9 +18,9 @@ RENDER = True
 NUM_EPISODES = 3
 
 # [중요] 체크포인트 경로 (본인의 경로로 수정)
-CHECKPOINT_PATH = "/home/jsr/project/Cooperative_pong_RL_agent/checkpoint"
+CHECKPOINT_PATH = "/home/jsr/project/Cooperative_pong_RL_agent/checkpoint2"
 
-MAX_CYCLES = 256
+MAX_CYCLES = 500
 
 
 class FixedParallelPettingZooEnv(ParallelPettingZooEnv):
