@@ -1,0 +1,17 @@
+# 1. 파일 이름에 'state'가 포함된 모든 파일 제외
+*state*
+
+# 2. 'results'라는 이름의 폴더와 그 안의 모든 내용 제외
+results/
+runs/
+wandb/
+__pycache__/
+meltingpot/
+venv_multi_agent/
+ray_results/
+checkpoint/
+
+# .png 와 .gif 확장자를 가진 모든 파일 제외
+*.png
+*.gif
+*checkpoint*/

@@ -1,0 +1,5 @@
+Requirement already satisfied: gymnasium in /home/jsr/miniconda3/envs/myenv/lib/python3.10/site-packages (1.2.2)
+Requirement already satisfied: numpy>=1.21.0 in /home/jsr/miniconda3/envs/myenv/lib/python3.10/site-packages (from gymnasium) (2.1.2)
+Requirement already satisfied: cloudpickle>=1.2.0 in /home/jsr/miniconda3/envs/myenv/lib/python3.10/site-packages (from gymnasium) (3.1.2)
+Requirement already satisfied: typing-extensions>=4.3.0 in /home/jsr/miniconda3/envs/myenv/lib/python3.10/site-packages (from gymnasium) (4.15.0)
+Requirement already satisfied: farama-notifications>=0.0.1 in /home/jsr/miniconda3/envs/myenv/lib/python3.10/site-packages (from gymnasium) (0.0.4)

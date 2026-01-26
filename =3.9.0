@@ -1,0 +1,11 @@
+Collecting supersuit
+  Using cached supersuit-3.10.0-py3-none-any.whl.metadata (3.1 kB)
+Requirement already satisfied: numpy>=1.19.0 in /home/jsr/miniconda3/envs/myenv/lib/python3.10/site-packages (from supersuit) (2.1.2)
+Requirement already satisfied: gymnasium>=1.0.0 in /home/jsr/miniconda3/envs/myenv/lib/python3.10/site-packages (from supersuit) (1.2.2)
+Requirement already satisfied: tinyscaler>=1.2.6 in /home/jsr/miniconda3/envs/myenv/lib/python3.10/site-packages (from supersuit) (1.2.8)
+Requirement already satisfied: cloudpickle>=1.2.0 in /home/jsr/miniconda3/envs/myenv/lib/python3.10/site-packages (from gymnasium>=1.0.0->supersuit) (3.1.2)
+Requirement already satisfied: typing-extensions>=4.3.0 in /home/jsr/miniconda3/envs/myenv/lib/python3.10/site-packages (from gymnasium>=1.0.0->supersuit) (4.15.0)
+Requirement already satisfied: farama-notifications>=0.0.1 in /home/jsr/miniconda3/envs/myenv/lib/python3.10/site-packages (from gymnasium>=1.0.0->supersuit) (0.0.4)
+Using cached supersuit-3.10.0-py3-none-any.whl (50 kB)
+Installing collected packages: supersuit
+Successfully installed supersuit-3.10.0
