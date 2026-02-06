@@ -11,7 +11,7 @@ from env_utils import env_creator
 import wandb 
 
 class MeltingPotCallbacks(DefaultCallbacks):
-    """기본 메트릭 집계 콜백 (이전과 동일)"""
+    """기본 메트릭 집계 콜백"""
     def on_episode_start(self, *, worker, base_env, policies, episode, **kwargs):
         for i in range(4):
             episode.user_data[f"deaths_player_{i}"] = 0
@@ -68,72 +68,87 @@ class SelfPlayCallback(MeltingPotCallbacks):
         os.makedirs(self.history_dir, exist_ok=True)
         self.history_index = [] # (iteration, path) 튜플 저장
 
+    def _get_pure_weights(self, algorithm, policy_id):
+        """
+        [안전장치] RLLib 버전에 따라 get_weights가 {'policy_id': weights} 형태일 수도 있고
+        그냥 weights일 수도 있습니다. 이를 확실하게 벗겨내어 반환하는 함수입니다.
+        """
+        weights = algorithm.get_weights(policy_id)
+        # 만약 반환된 weights가 dict이고, 그 안에 policy_id 키가 있다면 그 안의 값을 씁니다.
+        if isinstance(weights, dict) and policy_id in weights:
+            return weights[policy_id]
+        return weights
+
     def on_train_result(self, *, algorithm, result, **kwargs):
         iteration = result.get("training_iteration", 0)
         
         # ---------------------------------------------------------------------
-        # 1. [History] 현재 정책 가볍게 저장하기 (매 50 iter마다)
+        # 1. [History] 현재 정책 저장 (매 update_interval_iter 마다)
         # ---------------------------------------------------------------------
         if iteration % self.update_interval_iter == 0:
-            # [수정] get_weights는 {policy_id: weights}를 반환하므로 ["main_policy"]로 실제 가중치를 추출해야 함
-            weights_dict = algorithm.get_weights("main_policy")
-            main_weights = weights_dict["main_policy"]
+            # [수정] 안전하게 가중치 추출
+            main_weights = self._get_pure_weights(algorithm, "main_policy")
             
             save_path = os.path.join(self.history_dir, f"weights_iter_{iteration}.pt")
             
-            # 딕셔너리를 통째로 저장 (CPU로 이동하여 저장)
+            # CPU로 이동하여 저장 (Tensor인 경우)
             cpu_weights = {k: v.cpu() if isinstance(v, torch.Tensor) else v for k, v in main_weights.items()}
             torch.save(cpu_weights, save_path)
             
             self.history_index.append((iteration, save_path))
-            # 너무 많이 쌓이면 오래된 것 삭제 (선택사항, 일단 20개 유지)
+            # 20개 유지
             if len(self.history_index) > 20:
                 old_iter, old_path = self.history_index.pop(0)
                 if os.path.exists(old_path):
                     os.remove(old_path)
 
         # ---------------------------------------------------------------------
-        # 2. [Self-Play] Opponent 업데이트
+        # 2. [Self-Play] Opponent 업데이트 (현재 Main 정책 복사)
         # ---------------------------------------------------------------------
         if iteration > 0 and iteration % self.update_interval_iter == 0:
             print(f"\n🔄 [Self-Play] Updating Opponent to match Main Policy (Iter {iteration})")
             
-            # [수정] 위와 동일하게 ["main_policy"]로 실제 가중치 추출
-            weights_dict = algorithm.get_weights("main_policy")
-            main_weights = weights_dict["main_policy"]
+            # [수정] 안전하게 가중치 추출
+            main_weights = self._get_pure_weights(algorithm, "main_policy")
             
+            # set_weights는 {"policy_id": pure_weights} 형태를 받습니다.
             algorithm.set_weights({"opponent_policy": main_weights})
 
         # ---------------------------------------------------------------------
         # 3. [Past Evaluation] 과거의 나랑 싸우기 (100 iter 전 모델)
         # ---------------------------------------------------------------------
-        # 평가 조건: 현재 iteration이 200 이상이고, 100번마다 실행
-        target_lag = 100 # 100번 전 모델과 싸움
+        target_lag = 100 
         if iteration >= target_lag and iteration % self.update_interval_iter == 0:
             target_iter = iteration - target_lag
             
-            # 히스토리에서 가장 가까운 체크포인트 찾기
             best_ckpt = None
             for it, path in self.history_index:
-                if abs(it - target_iter) < 25: # 오차 범위 내
+                if abs(it - target_iter) < 25:
                     best_ckpt = path
                     break
             
             if best_ckpt and os.path.exists(best_ckpt):
                 print(f"⚔️ [Past-Eval] Fighting against checkpoint from Iter {target_iter}...")
                 
-                # (1) 현재 Opponent 백업
-                original_opponent_weights = copy.deepcopy(algorithm.get_weights("opponent_policy")["opponent_policy"])
+                # (1) 현재 Opponent 백업 (안전하게 추출)
+                original_opponent_weights = copy.deepcopy(
+                    self._get_pure_weights(algorithm, "opponent_policy")
+                )
                 
-                # (2) 과거의 나 로드 & Opponent에 주입
-                # 위에서 저장할 때 이미 flat dictionary로 저장했으므로 바로 로드 가능
+                # (2) 과거의 나 로드
                 past_weights = torch.load(best_ckpt)
+                
+                # [안전장치] 혹시 과거에 잘못 저장된 파일(policy 키가 포함된 파일)일 경우 대비
+                if "main_policy" in past_weights:
+                    past_weights = past_weights["main_policy"]
+                
+                # Opponent에 주입
                 algorithm.set_weights({"opponent_policy": past_weights})
                 
-                # (3) 단판 승부 (또는 3판)
+                # (3) 승부
                 win_rate, avg_score = self._run_duel(algorithm, num_matches=3)
                 
-                # (4) 결과 기록 (custom_metrics에 넣으면 WandB에 자동 뜸)
+                # (4) 결과 기록
                 result["custom_metrics"]["win_rate_vs_past_100"] = win_rate
                 result["custom_metrics"]["score_vs_past_100"] = avg_score
                 print(f"   >>> Result: Win Rate {win_rate*100:.1f}%, Score {avg_score:.1f}")
@@ -150,7 +165,6 @@ class SelfPlayCallback(MeltingPotCallbacks):
                 out_path = os.path.join(self.out_dir, f"eval_{self.eval_count:04d}_iter{iteration:06d}.gif")
                 rollout_and_save_gif(algorithm=algorithm, out_path=out_path, max_cycles=self.max_cycles)
 
-        # 5. 메모리 청소
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -159,7 +173,7 @@ class SelfPlayCallback(MeltingPotCallbacks):
         """평가를 위해 별도로 게임을 돌리는 함수"""
         env = env_creator({"substrate": "paintball__king_of_the_hill"})
         red_wins = 0
-        total_score_diff = 0 # (Red점수 - Blue점수)
+        total_score_diff = 0
         
         try:
             for _ in range(num_matches):
@@ -176,7 +190,6 @@ class SelfPlayCallback(MeltingPotCallbacks):
                             policy = algorithm.get_policy(policy_id)
                             agent_states[agent_id] = policy.get_initial_state()
                         
-                        # Explore=False로 진검승부
                         res = algorithm.compute_single_action(
                             agent_obs, state=agent_states[agent_id], policy_id=policy_id, explore=False
                         )
@@ -185,7 +198,6 @@ class SelfPlayCallback(MeltingPotCallbacks):
                     
                     obs, rewards, terms, truncs, _ = env.step(actions)
                     
-                    # 점수 계산
                     for (aid, _), r in rewards.items():
                         if aid in ["player_0", "player_2"]: score_red += r
                         else: score_blue += r
@@ -193,7 +205,6 @@ class SelfPlayCallback(MeltingPotCallbacks):
                     if any(terms.values()) or all(truncs.values()) or not obs:
                         break
                 
-                # 승패 판정
                 if score_red > score_blue: red_wins += 1
                 total_score_diff += (score_red - score_blue)
                 
@@ -214,7 +225,6 @@ def rollout_and_save_gif(algorithm, out_path, max_cycles=1000, fps=30):
         obs, _ = env.reset()
         if not obs: return
         
-        # 첫 프레임
         fr = env.par_env.render()
         if fr is not None: frames.append(fr)
         
@@ -234,23 +244,17 @@ def rollout_and_save_gif(algorithm, out_path, max_cycles=1000, fps=30):
             
             obs, _, terms, truncs, _ = env.step(actions)
             
-            # 프레임 저장 (4스텝마다 1장)
             fr = env.par_env.render()
             if fr is not None: frames.append(fr)
             
             if any(terms.values()) or all(truncs.values()) or not obs:
                 break
         
-        # GIF 저장
         imageio.mimsave(out_path, frames, fps=fps)
         print(f"[GIF] Saved: {out_path}")
         
-        # ---------------------------------------------------------------------
-        # [WandB Upload] 여기서 GIF를 바로 업로드합니다!
-        # ---------------------------------------------------------------------
         try:
             if wandb.run is not None:
-                # 캡션에 스텝 수 등을 넣을 수 있습니다.
                 wandb.log({
                     "evaluation/gameplay_gif": wandb.Video(out_path, fps=fps, format="gif", caption="Latest Evaluation Replay")
                 })
