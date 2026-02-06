@@ -75,7 +75,10 @@ class SelfPlayCallback(MeltingPotCallbacks):
         # 1. [History] 현재 정책 가볍게 저장하기 (매 50 iter마다)
         # ---------------------------------------------------------------------
         if iteration % self.update_interval_iter == 0:
-            main_weights = algorithm.get_weights("main_policy")
+            # [수정] get_weights는 {policy_id: weights}를 반환하므로 ["main_policy"]로 실제 가중치를 추출해야 함
+            weights_dict = algorithm.get_weights("main_policy")
+            main_weights = weights_dict["main_policy"]
+            
             save_path = os.path.join(self.history_dir, f"weights_iter_{iteration}.pt")
             
             # 딕셔너리를 통째로 저장 (CPU로 이동하여 저장)
@@ -94,7 +97,11 @@ class SelfPlayCallback(MeltingPotCallbacks):
         # ---------------------------------------------------------------------
         if iteration > 0 and iteration % self.update_interval_iter == 0:
             print(f"\n🔄 [Self-Play] Updating Opponent to match Main Policy (Iter {iteration})")
-            main_weights = algorithm.get_weights("main_policy")
+            
+            # [수정] 위와 동일하게 ["main_policy"]로 실제 가중치 추출
+            weights_dict = algorithm.get_weights("main_policy")
+            main_weights = weights_dict["main_policy"]
+            
             algorithm.set_weights({"opponent_policy": main_weights})
 
         # ---------------------------------------------------------------------
@@ -116,9 +123,10 @@ class SelfPlayCallback(MeltingPotCallbacks):
                 print(f"⚔️ [Past-Eval] Fighting against checkpoint from Iter {target_iter}...")
                 
                 # (1) 현재 Opponent 백업
-                original_opponent_weights = copy.deepcopy(algorithm.get_weights("opponent_policy"))
+                original_opponent_weights = copy.deepcopy(algorithm.get_weights("opponent_policy")["opponent_policy"])
                 
                 # (2) 과거의 나 로드 & Opponent에 주입
+                # 위에서 저장할 때 이미 flat dictionary로 저장했으므로 바로 로드 가능
                 past_weights = torch.load(best_ckpt)
                 algorithm.set_weights({"opponent_policy": past_weights})
                 
