@@ -31,9 +31,7 @@ def save_cnn_feature_maps():
     print("2. 데이터 확보 중 (Warm-up 10 steps)...")
     obs, _ = env.reset()
     
-    # [수정된 부분]
-    # RLLib 래퍼된 환경에서는 env.action_space가 함수가 아니라 객체입니다.
-    # 따라서 env.action_space(agent).sample() 대신 env.action_space.sample()을 씁니다.
+    # 환경을 몇 스텝 진행하여 관측값 확보
     for _ in range(10):
         actions = {agent: env.action_space.sample() for agent in env.agents}
         obs, _, _, _, _ = env.step(actions)

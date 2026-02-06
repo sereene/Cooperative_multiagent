@@ -11,6 +11,9 @@ class CustomCNN(TorchModelV2, nn.Module):
         TorchModelV2.__init__(self, obs_space, action_space, num_outputs, model_config, name)
         nn.Module.__init__(self)
 
+        custom_config = model_config.get("custom_model_config", {})
+        fc_dim = custom_config.get("fc_size", 256)
+
         shape = obs_space.shape
         input_channels = shape[2] if len(shape) == 3 else 1
         input_h, input_w = shape[:2]
@@ -34,12 +37,12 @@ class CustomCNN(TorchModelV2, nn.Module):
         # --- Fully Connected 레이어 정의 ---
         self.fc_net = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(self.flatten_dim, 512),
+            nn.Linear(self.flatten_dim, fc_dim), 
             nn.ReLU()
         )
 
-        self.policy_head = nn.Linear(512, num_outputs)
-        self.value_head = nn.Linear(512, 1)
+        self.policy_head = nn.Linear(fc_dim, num_outputs)
+        self.value_head = nn.Linear(fc_dim, 1)
         self._value_out = None
 
         # =================================================================
@@ -53,6 +56,7 @@ class CustomCNN(TorchModelV2, nn.Module):
             print(f"Observation Shape: {shape}")
             print(f"Input Channels   : {input_channels}")
             print(f"Flatten Dim      : {self.flatten_dim}")
+            print(f"FC Layer Dim     : {fc_dim}")  # 추가됨
             print(f"Total Parameters : {total_params:,}") 
             print(f"{'='*40}\n")
             

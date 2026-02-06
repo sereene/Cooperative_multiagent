@@ -1,3 +1,4 @@
+import argparse
 import os
 import warnings
 import torch
@@ -23,7 +24,11 @@ if __name__ == "__main__":
     ray.init()
     ModelCatalog.register_custom_model("custom_cnn", CustomCNN)
 
-    # [변경] 실험 이름 업데이트 (Shared -> Independent)
+    # Argument Parser 설정
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--fc_size", type=int, default=128, help="FC layer hidden size")
+    args = parser.parse_args()
+
     env_name = "cooperative_pong_independent_DoubleDQN"
     register_env(env_name, lambda cfg: env_creator(cfg))
     
@@ -45,7 +50,7 @@ if __name__ == "__main__":
 
     current_dir = os.getcwd()
     local_log_dir = os.path.join(current_dir, "results")
-    experiment_name = "DoubleDQN_CoopPong_Independent_CNN_RewardShaping_stack4_customframe"
+    experiment_name = f"DoubleDQN_CoopPong_Independent_CNN_RewardShaping_customstack4_fc{args.fc_size}"
 
     config = (
         DQNConfig()
@@ -62,9 +67,9 @@ if __name__ == "__main__":
             model={
                 "custom_model": "custom_cnn",
                 
-                "framestack": True, 
-                
-                "grayscale": True,   
+                "custom_model_config": {
+                    "fc_size": args.fc_size 
+                },
             },
 
             # --- Double DQN Specifics ---
@@ -89,7 +94,7 @@ if __name__ == "__main__":
             #     [10_000_000, 5e-7], # 끝날 때는 아주 낮게
             # ],
 
-            lr=1e-4,  
+            lr=2e-5,  
             gamma=0.99,
         )
         .exploration(

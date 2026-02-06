@@ -722,11 +722,7 @@ if __name__ == "__main__":
     tune.run(
         "PPO",
         name=experiment_name,
-<<<<<<< HEAD
         stop={"timesteps_total": 10_000_000},
-=======
-        stop={"timesteps_total": 20_000_000},
->>>>>>> 412078245fd837dfbb4a3cb48757d339382f2fbd
         local_dir=local_log_dir,
         metric="evaluation/custom_metrics/success_mean",
         mode="max",
@@ -738,11 +734,7 @@ if __name__ == "__main__":
 
         callbacks=[
             WandbLoggerCallback(
-<<<<<<< HEAD
                 project="cooperative_pong_multiagent_independent",
-=======
-                project="cooperative_pong_multiagent_shared_policy",
->>>>>>> 412078245fd837dfbb4a3cb48757d339382f2fbd
                 group="ppo_experiments",
                 job_type="training",
                 name=experiment_name,

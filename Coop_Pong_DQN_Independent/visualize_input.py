@@ -5,14 +5,7 @@ from pettingzoo.butterfly import cooperative_pong_v5
 from gymnasium import spaces
 from collections import deque
 from pettingzoo.utils.wrappers import BaseParallelWrapper
-
-# ==============================================================================
-# [1] Wrapper 정의 (작성해드린 최종 버전과 동일)
-# ==============================================================================
-import numpy as np
 from collections import deque
-from gymnasium import spaces
-from pettingzoo.utils.wrappers import BaseParallelWrapper
 
 class FrameStackWrapper(BaseParallelWrapper):
     def __init__(self, env, num_stack=4):
