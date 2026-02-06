@@ -72,9 +72,7 @@ if __name__ == "__main__":
         .rl_module(_enable_rl_module_api=False)
         .rollouts(
             compress_observations=True,
-            # [안전 설정] 워커 4개 (봇 로딩이 없으므로 4개도 충분히 돔)
             num_rollout_workers=8, 
-            num_envs_per_worker=1, 
             rollout_fragment_length=256,
             sample_timeout_s=600,
         )
@@ -118,8 +116,8 @@ if __name__ == "__main__":
         checkpoint_freq=50, # 체크포인트도 50번마다 저장
         checkpoint_at_end=True,
         keep_checkpoints_num=3,
-        checkpoint_score_attr="policy_reward_mean/main_policy",
-        metric="policy_reward_mean/main_policy",
+        checkpoint_score_attr="training_iteration",
+        metric="training_iteration",
         mode="max",
         callbacks=[
             WandbLoggerCallback(
