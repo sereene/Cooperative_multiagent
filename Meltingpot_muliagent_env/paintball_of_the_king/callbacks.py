@@ -86,7 +86,7 @@ class SelfPlayCallback(MeltingPotCallbacks):
         # 1. [History] 현재 정책 저장 (매 update_interval_iter 마다)
         # ---------------------------------------------------------------------
         if iteration % self.update_interval_iter == 0:
-            # [수정] 안전하게 가중치 추출
+            # [안전장치] 가중치 추출
             main_weights = self._get_pure_weights(algorithm, "main_policy")
             
             save_path = os.path.join(self.history_dir, f"weights_iter_{iteration}.pt")
@@ -108,7 +108,7 @@ class SelfPlayCallback(MeltingPotCallbacks):
         if iteration > 0 and iteration % self.update_interval_iter == 0:
             print(f"\n🔄 [Self-Play] Updating Opponent to match Main Policy (Iter {iteration})")
             
-            # [수정] 안전하게 가중치 추출
+            # [안전장치] 가중치 추출
             main_weights = self._get_pure_weights(algorithm, "main_policy")
             
             # set_weights는 {"policy_id": pure_weights} 형태를 받습니다.
@@ -135,10 +135,14 @@ class SelfPlayCallback(MeltingPotCallbacks):
                     self._get_pure_weights(algorithm, "opponent_policy")
                 )
                 
-                # (2) 과거의 나 로드
-                past_weights = torch.load(best_ckpt)
+                # (2) 과거의 나 로드 [수정된 부분: weights_only=False 추가]
+                try:
+                    past_weights = torch.load(best_ckpt, weights_only=False)
+                except TypeError:
+                    # 구버전 PyTorch 호환성을 위한 예외 처리
+                    past_weights = torch.load(best_ckpt)
                 
-                # [안전장치] 혹시 과거에 잘못 저장된 파일(policy 키가 포함된 파일)일 경우 대비
+                # [안전장치] 혹시 과거에 잘못 저장된 파일(policy 키가 포함된 파일)일 경우 구조 맞춤
                 if "main_policy" in past_weights:
                     past_weights = past_weights["main_policy"]
                 
