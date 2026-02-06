@@ -61,7 +61,7 @@ if __name__ == "__main__":
 
     current_dir = os.getcwd()
     local_log_dir = os.path.join(current_dir, "results_selfplay")
-    exp_name = "MeltingPot_KOTH_SelfPlay_MainVsPast"
+    exp_name = "MeltingPot_KOTH_SelfPlay_noBot_1e-5_Fc256"
     start_time = datetime.now().strftime("%m-%d_%H-%M-%S")
     gif_save_path = os.path.join(local_log_dir, exp_name, f"gifs_{start_time}")
 
@@ -73,9 +73,9 @@ if __name__ == "__main__":
         .rollouts(
             compress_observations=True,
             # [안전 설정] 워커 4개 (봇 로딩이 없으므로 4개도 충분히 돔)
-            num_rollout_workers=4, 
+            num_rollout_workers=8, 
             num_envs_per_worker=1, 
-            rollout_fragment_length=512,
+            rollout_fragment_length=256,
             sample_timeout_s=600,
         )
         .training(
@@ -85,13 +85,13 @@ if __name__ == "__main__":
                 "max_seq_len": 100,
                 "vf_share_layers": False
             },
-            lr=5e-6,
+            lr=1e-5,
             gamma=0.99,
             lambda_=0.95,
             kl_coeff=0.2,
             clip_param=0.2,
             entropy_coeff=0.01, 
-            train_batch_size=2048, 
+            train_batch_size=8*256, 
             sgd_minibatch_size=256,
             num_sgd_iter=10,
         )
@@ -118,8 +118,8 @@ if __name__ == "__main__":
         checkpoint_freq=50, # 체크포인트도 50번마다 저장
         checkpoint_at_end=True,
         keep_checkpoints_num=3,
-        checkpoint_score_attr="custom_metrics/occupation_rate_red",
-        metric="custom_metrics/occupation_rate_red",
+        checkpoint_score_attr="policy_reward_mean/main_policy",
+        metric="policy_reward_mean/main_policy",
         mode="max",
         callbacks=[
             WandbLoggerCallback(
