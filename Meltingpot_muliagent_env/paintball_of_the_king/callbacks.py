@@ -1,163 +1,256 @@
 import os
 import gc
+import copy
 import imageio.v2 as imageio
 import numpy as np
+import torch
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
 from env_utils import env_creator
 
+# [추가] WandB 연동을 위해 임포트
+import wandb 
+
 class MeltingPotCallbacks(DefaultCallbacks):
+    """기본 메트릭 집계 콜백 (이전과 동일)"""
     def on_episode_start(self, *, worker, base_env, policies, episode, **kwargs):
-        # 1. 사망 횟수 초기화
         for i in range(4):
             episode.user_data[f"deaths_player_{i}"] = 0
-            
-        # 2. 점령 스텝 카운터 초기화
         episode.user_data["red_occupation_steps"] = 0
+        episode.user_data["blue_occupation_steps"] = 0
 
     def on_episode_step(self, *, worker, base_env, policies, episode, **kwargs):
-        # 1. 사망 횟수 집계
+        # 1. 교전 횟수 집계
         for i in range(4):
             agent_id = f"player_{i}"
             info = episode.last_info_for(agent_id)
-            if info and info.get("was_zapped", False):
-                episode.user_data[f"deaths_{agent_id}"] += 1
+            if info and "events" in info:
+                for event in info["events"]:
+                    if isinstance(event, dict) and event.get("name") == "removal":
+                        episode.user_data[f"deaths_{agent_id}"] += 1
 
-        # 2. 점령 여부 확인
+        # 2. 점령률 집계
         r0 = 0.0
         try:
             r0 = episode.prev_reward_for("player_0")
         except AttributeError:
-            for (aid, pid), reward in episode.agent_rewards.items():
+            for (aid, _), reward in episode.agent_rewards.items():
                 if aid == "player_0":
                     r0 = reward
                     break
         
         if r0 > 0:
             episode.user_data["red_occupation_steps"] += 1
+        elif r0 < 0:
+            episode.user_data["blue_occupation_steps"] += 1
 
     def on_episode_end(self, *, worker, base_env, policies, episode, **kwargs):
-        # 1. 총점 기록
         episode.custom_metrics["score"] = episode.total_reward
-        
-        # 2. 개별 보상 기록
-        for (agent_id, policy_id), reward in episode.agent_rewards.items():
-            episode.custom_metrics[f"reward_{agent_id}"] = reward
-        
-        # 3. 사망 횟수(Deaths) 기록 -> 이것의 총합이 곧 교전 횟수(Zaps)입니다.
-        total_deaths = 0
-        for i in range(4):
-            key = f"deaths_player_{i}"
-            death_count = episode.user_data.get(key, 0)
-            episode.custom_metrics[key] = death_count
-            total_deaths += death_count
-
-        # [추가] 전체 교전 활성화 정도 (높을수록 서로 잘 싸우는 것)
+        total_deaths = sum(episode.user_data.get(f"deaths_player_{i}", 0) for i in range(4))
         episode.custom_metrics["total_zaps_in_episode"] = total_deaths
-
-        # 4. 점령률 계산
-        occupation_steps = episode.user_data.get("red_occupation_steps", 0)
-        episode_len = episode.length if episode.length > 0 else 1000
         
-        occupation_rate = occupation_steps / episode_len if episode_len > 0 else 0
-        episode.custom_metrics["occupation_rate"] = occupation_rate
+        ep_len = max(episode.length, 1)
+        episode.custom_metrics["occupation_rate_red"] = episode.user_data["red_occupation_steps"] / ep_len
+        episode.custom_metrics["occupation_rate_blue"] = episode.user_data["blue_occupation_steps"] / ep_len
 
-def rollout_and_save_gif(
-    *,
-    algorithm,
-    out_path: str,
-    max_cycles: int = 1000,
-    every_n_steps: int = 4,
-    max_frames: int = 1000,
-    fps: int = 30,
-):
+# -----------------------------------------------------------------------------
+# [핵심] Self-Play + Past Evaluation + WandB GIF 업로드
+# -----------------------------------------------------------------------------
+class SelfPlayCallback(MeltingPotCallbacks):
+    def __init__(self, out_dir: str, update_interval_iter: int = 50, max_cycles: int = 1000):
+        super().__init__()
+        self.out_dir = out_dir
+        self.update_interval_iter = update_interval_iter
+        self.max_cycles = max_cycles
+        self.eval_count = 0
+        
+        # 가중치 저장소
+        self.history_dir = os.path.join(out_dir, "policy_history")
+        os.makedirs(self.history_dir, exist_ok=True)
+        self.history_index = [] # (iteration, path) 튜플 저장
+
+    def on_train_result(self, *, algorithm, result, **kwargs):
+        iteration = result.get("training_iteration", 0)
+        
+        # ---------------------------------------------------------------------
+        # 1. [History] 현재 정책 가볍게 저장하기 (매 50 iter마다)
+        # ---------------------------------------------------------------------
+        if iteration % self.update_interval_iter == 0:
+            main_weights = algorithm.get_weights("main_policy")
+            save_path = os.path.join(self.history_dir, f"weights_iter_{iteration}.pt")
+            
+            # 딕셔너리를 통째로 저장 (CPU로 이동하여 저장)
+            cpu_weights = {k: v.cpu() if isinstance(v, torch.Tensor) else v for k, v in main_weights.items()}
+            torch.save(cpu_weights, save_path)
+            
+            self.history_index.append((iteration, save_path))
+            # 너무 많이 쌓이면 오래된 것 삭제 (선택사항, 일단 20개 유지)
+            if len(self.history_index) > 20:
+                old_iter, old_path = self.history_index.pop(0)
+                if os.path.exists(old_path):
+                    os.remove(old_path)
+
+        # ---------------------------------------------------------------------
+        # 2. [Self-Play] Opponent 업데이트
+        # ---------------------------------------------------------------------
+        if iteration > 0 and iteration % self.update_interval_iter == 0:
+            print(f"\n🔄 [Self-Play] Updating Opponent to match Main Policy (Iter {iteration})")
+            main_weights = algorithm.get_weights("main_policy")
+            algorithm.set_weights({"opponent_policy": main_weights})
+
+        # ---------------------------------------------------------------------
+        # 3. [Past Evaluation] 과거의 나랑 싸우기 (100 iter 전 모델)
+        # ---------------------------------------------------------------------
+        # 평가 조건: 현재 iteration이 200 이상이고, 100번마다 실행
+        target_lag = 100 # 100번 전 모델과 싸움
+        if iteration >= target_lag and iteration % self.update_interval_iter == 0:
+            target_iter = iteration - target_lag
+            
+            # 히스토리에서 가장 가까운 체크포인트 찾기
+            best_ckpt = None
+            for it, path in self.history_index:
+                if abs(it - target_iter) < 25: # 오차 범위 내
+                    best_ckpt = path
+                    break
+            
+            if best_ckpt and os.path.exists(best_ckpt):
+                print(f"⚔️ [Past-Eval] Fighting against checkpoint from Iter {target_iter}...")
+                
+                # (1) 현재 Opponent 백업
+                original_opponent_weights = copy.deepcopy(algorithm.get_weights("opponent_policy"))
+                
+                # (2) 과거의 나 로드 & Opponent에 주입
+                past_weights = torch.load(best_ckpt)
+                algorithm.set_weights({"opponent_policy": past_weights})
+                
+                # (3) 단판 승부 (또는 3판)
+                win_rate, avg_score = self._run_duel(algorithm, num_matches=3)
+                
+                # (4) 결과 기록 (custom_metrics에 넣으면 WandB에 자동 뜸)
+                result["custom_metrics"]["win_rate_vs_past_100"] = win_rate
+                result["custom_metrics"]["score_vs_past_100"] = avg_score
+                print(f"   >>> Result: Win Rate {win_rate*100:.1f}%, Score {avg_score:.1f}")
+
+                # (5) Opponent 원상복구
+                algorithm.set_weights({"opponent_policy": original_opponent_weights})
+
+        # ---------------------------------------------------------------------
+        # 4. GIF 생성 및 WandB 업로드
+        # ---------------------------------------------------------------------
+        if "evaluation" in result:
+            self.eval_count += 1
+            if self.eval_count % 5 == 0:
+                out_path = os.path.join(self.out_dir, f"eval_{self.eval_count:04d}_iter{iteration:06d}.gif")
+                rollout_and_save_gif(algorithm=algorithm, out_path=out_path, max_cycles=self.max_cycles)
+
+        # 5. 메모리 청소
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def _run_duel(self, algorithm, num_matches=1):
+        """평가를 위해 별도로 게임을 돌리는 함수"""
+        env = env_creator({"substrate": "paintball__king_of_the_hill"})
+        red_wins = 0
+        total_score_diff = 0 # (Red점수 - Blue점수)
+        
+        try:
+            for _ in range(num_matches):
+                obs, _ = env.reset()
+                agent_states = {}
+                score_red = 0
+                score_blue = 0
+                
+                for _ in range(self.max_cycles):
+                    actions = {}
+                    for agent_id, agent_obs in obs.items():
+                        policy_id = algorithm.config.policy_mapping_fn(agent_id)
+                        if agent_id not in agent_states:
+                            policy = algorithm.get_policy(policy_id)
+                            agent_states[agent_id] = policy.get_initial_state()
+                        
+                        # Explore=False로 진검승부
+                        res = algorithm.compute_single_action(
+                            agent_obs, state=agent_states[agent_id], policy_id=policy_id, explore=False
+                        )
+                        actions[agent_id] = res[0] if isinstance(res, tuple) else res
+                        agent_states[agent_id] = res[1] if isinstance(res, tuple) else agent_states[agent_id]
+                    
+                    obs, rewards, terms, truncs, _ = env.step(actions)
+                    
+                    # 점수 계산
+                    for (aid, _), r in rewards.items():
+                        if aid in ["player_0", "player_2"]: score_red += r
+                        else: score_blue += r
+
+                    if any(terms.values()) or all(truncs.values()) or not obs:
+                        break
+                
+                # 승패 판정
+                if score_red > score_blue: red_wins += 1
+                total_score_diff += (score_red - score_blue)
+                
+        finally:
+            env.close()
+            del env
+        
+        return red_wins / num_matches, total_score_diff / num_matches
+
+
+def rollout_and_save_gif(algorithm, out_path, max_cycles=1000, fps=30):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    # [주의] env_utils에서 수정된 env_creator를 가져와야 함
     env = env_creator({"substrate": "paintball__king_of_the_hill"})
     frames = []
     agent_states = {}
-
+    
     try:
-        obs, infos = env.reset()
-        step_i = 0
-        fr0 = env.par_env.render() 
-        if fr0 is not None: frames.append(fr0)
+        obs, _ = env.reset()
+        if not obs: return
         
-        terminations = {a: False for a in env.par_env.possible_agents}
-        truncations = {a: False for a in env.par_env.possible_agents}
-
-        while True:
-            if not obs: break
+        # 첫 프레임
+        fr = env.par_env.render()
+        if fr is not None: frames.append(fr)
+        
+        for _ in range(max_cycles):
             actions = {}
             for agent_id, agent_obs in obs.items():
                 policy_id = algorithm.config.policy_mapping_fn(agent_id)
-                
                 if agent_id not in agent_states:
                     policy = algorithm.get_policy(policy_id)
                     agent_states[agent_id] = policy.get_initial_state()
-
-                # [수정된 부분] 결과가 튜플인지 값 하나인지 확인하여 처리
-                result = algorithm.compute_single_action(
-                    agent_obs, 
-                    state=agent_states[agent_id],
-                    policy_id=policy_id, 
-                    explore=True
-                )
                 
-                # 결과 타입에 따른 분기 처리
-                if isinstance(result, tuple) and len(result) >= 2:
-                    # (action, state, info) 튜플인 경우 (Recurrent Policy)
-                    action = result[0]
-                    state_out = result[1]
-                else:
-                    # Action 값 하나만 온 경우 (Stateless Policy)
-                    action = result
-                    state_out = agent_states[agent_id] # 상태 변화 없음 (빈 리스트 유지)
-
-                actions[agent_id] = action
-                agent_states[agent_id] = state_out
-
-            obs, rewards, terminations, truncations, infos = env.step(actions)
-
-            if (step_i % every_n_steps) == 0:
-                if len(frames) >= max_frames: break
-                fr = env.par_env.render()
-                if fr is not None: frames.append(fr)
-            step_i += 1
-            if any(terminations.values()) or all(truncations.values()) or len(obs) == 0:
+                res = algorithm.compute_single_action(
+                    agent_obs, state=agent_states[agent_id], policy_id=policy_id, explore=True
+                )
+                actions[agent_id] = res[0] if isinstance(res, tuple) else res
+                agent_states[agent_id] = res[1] if isinstance(res, tuple) else agent_states[agent_id]
+            
+            obs, _, terms, truncs, _ = env.step(actions)
+            
+            # 프레임 저장 (4스텝마다 1장)
+            fr = env.par_env.render()
+            if fr is not None: frames.append(fr)
+            
+            if any(terms.values()) or all(truncs.values()) or not obs:
                 break
-            if step_i >= max_cycles:
-                break
-
-        if frames:
-            imageio.mimsave(out_path, frames, fps=fps)
-            print(f"[GIF] Saved: {out_path} (Frames: {len(frames)})")
-    finally:
+        
+        # GIF 저장
+        imageio.mimsave(out_path, frames, fps=fps)
+        print(f"[GIF] Saved: {out_path}")
+        
+        # ---------------------------------------------------------------------
+        # [WandB Upload] 여기서 GIF를 바로 업로드합니다!
+        # ---------------------------------------------------------------------
         try:
-            env.close()
-            gc.collect()
-        except Exception:
-            pass
+            if wandb.run is not None:
+                # 캡션에 스텝 수 등을 넣을 수 있습니다.
+                wandb.log({
+                    "evaluation/gameplay_gif": wandb.Video(out_path, fps=fps, format="gif", caption="Latest Evaluation Replay")
+                })
+                print(f"[WandB] GIF uploaded successfully.")
+        except Exception as e:
+            print(f"[Warning] Failed to upload GIF to WandB: {e}")
 
-class GifCallbacks(MeltingPotCallbacks):
-    def __init__(self, out_dir: str, every_n_evals: int = 5, max_cycles: int = 1000):
-        super().__init__()
-        self.out_dir = out_dir
-        self.every_n_evals = every_n_evals
-        self.max_cycles = max_cycles
-        self.eval_count = 0
-        os.makedirs(self.out_dir, exist_ok=True)
-
-    def on_train_result(self, *, algorithm, result, **kwargs):
-        if "evaluation" not in result: return
-        
-        training_iter = int(result.get("training_iteration", 0))
-        self.eval_count += 1
-        
-        if (self.eval_count % self.every_n_evals) == 0:
-            out_path = os.path.join(self.out_dir, f"eval_{self.eval_count:04d}_iter{training_iter:06d}.gif")
-            print(f"Generating GIF at {out_path}...")
-            rollout_and_save_gif(
-                algorithm=algorithm, 
-                out_path=out_path, 
-                max_cycles=self.max_cycles
-            )
+    finally:
+        env.close()
+        del env, agent_states, obs, frames
+        gc.collect()
