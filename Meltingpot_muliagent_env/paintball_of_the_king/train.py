@@ -18,7 +18,7 @@ os.environ["TUNE_DISABLE_STRICT_METRIC_CHECKING"] = "1"
 warnings.filterwarnings("ignore", category=UserWarning, module="gymnasium.spaces.box")
 
 from env_utils import env_creator
-from CNN_LSTM_model import MeltingPotModel
+from model import MeltingPotModel
 from callbacks import SelfPlayCallback
 
 if __name__ == "__main__":
