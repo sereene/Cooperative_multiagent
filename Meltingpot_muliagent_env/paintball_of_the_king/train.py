@@ -31,7 +31,7 @@ if __name__ == "__main__":
     # WandB 설정 정보
     WANDB_PROJECT = "MeltingPot_KOTH_SelfPlay"
     WANDB_GROUP = "Main_vs_Past"
-    EXP_NAME = "MeltingPot_KOTH_SelfPlay_noBot_1e-5_lstm_fc128"
+    EXP_NAME = "MeltingPot_KOTH_SelfPlay_noBot_5e-6_framestack4"
 
     # 환경 스펙 확인
     tmp_env = env_creator({"substrate": "paintball__king_of_the_hill"})
@@ -82,7 +82,7 @@ if __name__ == "__main__":
                 "max_seq_len": 100,
                 "vf_share_layers": False
             },
-            lr=1e-5,
+            lr=5e-6,
             gamma=0.99,
             lambda_=0.95,
             kl_coeff=0.2,
