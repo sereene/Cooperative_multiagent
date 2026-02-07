@@ -33,7 +33,6 @@ class MeltingPotCallbacks(DefaultCallbacks):
         try:
             r0 = episode.prev_reward_for("player_0")
         except AttributeError:
-            # RLLib 내부 episode 객체는 (agent_id, policy_id) 키를 사용할 수 있음
             for (aid, _), reward in episode.agent_rewards.items():
                 if aid == "player_0":
                     r0 = reward
@@ -64,16 +63,11 @@ class SelfPlayCallback(MeltingPotCallbacks):
         self.max_cycles = max_cycles
         self.eval_count = 0
         
-        # 가중치 저장소
         self.history_dir = os.path.join(out_dir, "policy_history")
         os.makedirs(self.history_dir, exist_ok=True)
-        self.history_index = [] # (iteration, path) 튜플 저장
+        self.history_index = [] 
 
     def _get_pure_weights(self, algorithm, policy_id):
-        """
-        [안전장치] RLLib 버전에 따라 get_weights가 {'policy_id': weights} 형태일 수도 있고
-        그냥 weights일 수도 있습니다. 이를 확실하게 벗겨내어 반환하는 함수입니다.
-        """
         weights = algorithm.get_weights(policy_id)
         if isinstance(weights, dict) and policy_id in weights:
             return weights[policy_id]
@@ -81,17 +75,14 @@ class SelfPlayCallback(MeltingPotCallbacks):
 
     def on_train_result(self, *, algorithm, result, **kwargs):
         iteration = result.get("training_iteration", 0)
+        # [수정 1] 현재 타임스텝 가져오기
+        current_step = result.get("timesteps_total", 0)
         
-        # ---------------------------------------------------------------------
-        # 1. [History] 현재 정책 저장 (매 update_interval_iter 마다)
-        # ---------------------------------------------------------------------
+        # 1. [History] 현재 정책 저장
         if iteration % self.update_interval_iter == 0:
             main_weights = self._get_pure_weights(algorithm, "main_policy")
-            
-            # 여기서 .pt 파일이 생성되는 것은 정상입니다 (과거 정책 저장용)
             save_path = os.path.join(self.history_dir, f"weights_iter_{iteration}.pt")
             
-            # CPU로 이동하여 저장
             cpu_weights = {k: v.cpu() if isinstance(v, torch.Tensor) else v for k, v in main_weights.items()}
             torch.save(cpu_weights, save_path)
             
@@ -101,18 +92,13 @@ class SelfPlayCallback(MeltingPotCallbacks):
                 if os.path.exists(old_path):
                     os.remove(old_path)
 
-        # ---------------------------------------------------------------------
-        # 2. [Self-Play] Opponent 업데이트 (현재 Main 정책 복사)
-        # ---------------------------------------------------------------------
+        # 2. [Self-Play] Opponent 업데이트
         if iteration > 0 and iteration % self.update_interval_iter == 0:
             print(f"\n🔄 [Self-Play] Updating Opponent to match Main Policy (Iter {iteration})")
-            
             main_weights = self._get_pure_weights(algorithm, "main_policy")
             algorithm.set_weights({"opponent_policy": main_weights})
 
-        # ---------------------------------------------------------------------
-        # 3. [Past Evaluation] 과거의 나랑 싸우기 (100 iter 전 모델)
-        # ---------------------------------------------------------------------
+        # 3. [Past Evaluation] 과거의 나랑 싸우기
         target_lag = 100 
         if iteration >= target_lag and iteration % self.update_interval_iter == 0:
             target_iter = iteration - target_lag
@@ -130,7 +116,6 @@ class SelfPlayCallback(MeltingPotCallbacks):
                     self._get_pure_weights(algorithm, "opponent_policy")
                 )
                 
-                # [보안 에러 해결] weights_only=False
                 try:
                     past_weights = torch.load(best_ckpt, weights_only=False)
                 except TypeError:
@@ -141,47 +126,38 @@ class SelfPlayCallback(MeltingPotCallbacks):
                 
                 algorithm.set_weights({"opponent_policy": past_weights})
                 
-                # (3) 승부 (여기서 에러가 났던 _run_duel 호출)
                 win_rate, avg_score = self._run_duel(algorithm, num_matches=3)
                 print(f"   >>> Result: Win Rate {win_rate*100:.1f}%, Score {avg_score:.1f}")
 
-                # [로깅 1] RLLib result에 추가 (RLLib 표준)
                 if "custom_metrics" not in result:
                     result["custom_metrics"] = {}
                 result["custom_metrics"]["win_rate_vs_past_100"] = win_rate
                 result["custom_metrics"]["score_vs_past_100"] = avg_score
                 
-                # [로깅 2] Result 최상위에도 추가 (WandB가 더 잘 잡음)
                 result["win_rate_vs_past_100"] = win_rate
                 result["score_vs_past_100"] = avg_score
 
-                # [로깅 3] WandB에 강제 전송 (확실한 방법)
+                # [수정 2] Past Evaluation 로그도 step 명시
                 try:
                     if wandb.run is not None:
                         wandb.log({
                             "eval_vs_past/win_rate": win_rate,
                             "eval_vs_past/score_diff": avg_score,
-                            "trainer/global_step": result.get("timesteps_total", 0),
                             "iteration": iteration
-                        })
-                        print(f"   [WandB] Logged win_rate manually.")
+                        }, step=current_step)
                 except Exception as e:
-                    pass # WandB 미실행시 무시
+                    pass 
 
                 algorithm.set_weights({"opponent_policy": original_opponent_weights})
 
-        # ---------------------------------------------------------------------
-        # 4. [GIF 생성] RLLib Evaluation과 무관하게 강제 실행
-        # ---------------------------------------------------------------------
-        # 기존: if "evaluation" in result: (Evaluation 안 켜면 실행 안 됨)
-        # 수정: iteration 주기에 맞춰 무조건 실행
+        # 4. [GIF 생성] 
         if iteration > 0 and iteration % self.update_interval_iter == 0:
             self.eval_count += 1
-            # 5번(250 iter)마다 GIF 저장
             if self.eval_count % 5 == 0:
                 out_path = os.path.join(self.out_dir, f"eval_{self.eval_count:04d}_iter{iteration:06d}.gif")
                 print(f"🎬 Generating GIF to {out_path}...")
-                rollout_and_save_gif(algorithm=algorithm, out_path=out_path, max_cycles=self.max_cycles)
+                # [수정 3] step 인자 전달
+                rollout_and_save_gif(algorithm=algorithm, out_path=out_path, max_cycles=self.max_cycles, step=current_step)
 
         gc.collect()
         if torch.cuda.is_available():
@@ -190,7 +166,7 @@ class SelfPlayCallback(MeltingPotCallbacks):
     def _run_duel(self, algorithm, num_matches=1):
         """평가를 위해 별도로 게임을 돌리는 함수"""
         env = env_creator({"substrate": "paintball__king_of_the_hill"})
-        red_wins = 0
+        red_wins = 0.0 # float로 변경
         total_score_diff = 0
         
         try:
@@ -208,6 +184,7 @@ class SelfPlayCallback(MeltingPotCallbacks):
                             policy = algorithm.get_policy(policy_id)
                             agent_states[agent_id] = policy.get_initial_state()
                         
+                        # [TIP] 평가 시에는 explore=False 권장 (결정론적 행동)
                         res = algorithm.compute_single_action(
                             agent_obs, state=agent_states[agent_id], policy_id=policy_id, explore=False
                         )
@@ -216,9 +193,6 @@ class SelfPlayCallback(MeltingPotCallbacks):
                     
                     obs, rewards, terms, truncs, _ = env.step(actions)
                     
-                    # [에러 수정 완료]
-                    # 이전 코드: for (aid, _), r in rewards.items():  <- 여기서 에러 발생
-                    # 수정 코드: for aid, r in rewards.items():       <- 직접 실행한 env는 키가 문자열임
                     for aid, r in rewards.items():
                         if aid in ["player_0", "player_2"]: score_red += r
                         else: score_blue += r
@@ -226,7 +200,12 @@ class SelfPlayCallback(MeltingPotCallbacks):
                     if any(terms.values()) or all(truncs.values()) or not obs:
                         break
                 
-                if score_red > score_blue: red_wins += 1
+                # [TIP] 무승부(0vs0) 처리 추가
+                if score_red > score_blue: 
+                    red_wins += 1.0
+                elif score_red == score_blue and score_red != 0: # 점수가 났는데 동점인 경우
+                    red_wins += 0.5
+                
                 total_score_diff += (score_red - score_blue)
                 
         finally:
@@ -235,8 +214,8 @@ class SelfPlayCallback(MeltingPotCallbacks):
         
         return red_wins / num_matches, total_score_diff / num_matches
 
-
-def rollout_and_save_gif(algorithm, out_path, max_cycles=1000, fps=30):
+# [수정 4] 함수 정의에 step 파라미터 추가
+def rollout_and_save_gif(algorithm, out_path, max_cycles=1000, fps=30, step=None):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     env = env_creator({"substrate": "paintball__king_of_the_hill"})
     frames = []
@@ -274,13 +253,18 @@ def rollout_and_save_gif(algorithm, out_path, max_cycles=1000, fps=30):
         imageio.mimsave(out_path, frames, fps=fps)
         print(f"[GIF] Saved: {out_path}")
         
-        # [WandB] GIF 강제 업로드
+        # [수정 5] WandB에 로그 시 step 명시
         try:
             if wandb.run is not None:
-                wandb.log({
-                    "evaluation/gameplay_gif": wandb.Video(out_path, fps=fps, format="gif", caption="Latest Evaluation Replay")
-                })
-                print(f"[WandB] GIF uploaded successfully.")
+                log_data = {
+                    "evaluation/gameplay_gif": wandb.Video(out_path, fps=fps, format="gif", caption=f"Eval Replay (Step {step})")
+                }
+                if step is not None:
+                    wandb.log(log_data, step=step)
+                    print(f"[WandB] Logged GIF at step {step}")
+                else:
+                    wandb.log(log_data)
+                    print(f"[WandB] Logged GIF (no step)")
         except Exception as e:
             print(f"[Warning] Failed to upload GIF to WandB: {e}")
 
