@@ -8,9 +8,9 @@ from ray import tune
 from ray.tune.registry import register_env
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.rllib.models import ModelCatalog
+from ray.air.integrations.wandb import WandbLoggerCallback 
 from datetime import datetime
 import tensorflow as tf
-import wandb # WandB 임포트
 
 # [설정] TF GPU 비활성화
 tf.config.set_visible_devices([], 'GPU')
@@ -31,17 +31,7 @@ if __name__ == "__main__":
     # WandB 설정 정보
     WANDB_PROJECT = "MeltingPot_KOTH_SelfPlay"
     WANDB_GROUP = "Main_vs_Past"
-    EXP_NAME = "MeltingPot_KOTH_SelfPlay_noBot_1e-5_lstm_Fc128"
-
-    # [수정] 메인 프로세스에서 WandB 직접 초기화 (워커 충돌 방지)
-    if wandb.run is None:
-        print(f"🚀 Initializing WandB: {EXP_NAME}")
-        wandb.init(
-            project=WANDB_PROJECT,
-            group=WANDB_GROUP,
-            name=EXP_NAME,
-            reinit=True
-        )
+    EXP_NAME = "MeltingPot_KOTH_SelfPlay_noBot_1e-5_lstm_fc128"
 
     # 환경 스펙 확인
     tmp_env = env_creator({"substrate": "paintball__king_of_the_hill"})
@@ -69,8 +59,11 @@ if __name__ == "__main__":
 
     current_dir = os.getcwd()
     local_log_dir = os.path.join(current_dir, "results_selfplay")
+    
+    # [복구] 타임스탬프가 포함된 GIF 저장 경로 생성
     start_time = datetime.now().strftime("%m-%d_%H-%M-%S")
     gif_save_path = os.path.join(local_log_dir, EXP_NAME, f"gifs_{start_time}")
+    os.makedirs(gif_save_path, exist_ok=True) # 경로 미리 생성
 
     config = (
         PPOConfig()
@@ -81,6 +74,7 @@ if __name__ == "__main__":
             compress_observations=True,
             num_rollout_workers=8, 
             rollout_fragment_length=256,
+            sample_timeout_s=600,
         )
         .training(
             _enable_learner_api=False,
@@ -104,16 +98,18 @@ if __name__ == "__main__":
             policy_mapping_fn=policy_mapping_fn,
             policies_to_train=["main_policy"],
         )
-        # [수정] 콜백 생성 시 wandb 인자 제거 (이미 init됨)
+        # [복구] GIF 저장 경로를 콜백에 전달
         .callbacks(lambda: SelfPlayCallback(
-            out_dir=gif_save_path, 
-            update_interval_iter=20
+            out_dir=gif_save_path,
+            update_interval_iter=20,
+            max_cycles=1000
         ))
         .evaluation(evaluation_interval=50, evaluation_num_episodes=1, evaluation_config={"explore": False})
         .resources(num_gpus=1 if torch.cuda.is_available() else 0)
     )
 
     print(f"### Starting Self-Play Training. Logs: {local_log_dir} ###")
+    print(f"### Local GIFs will be saved to: {gif_save_path} ###")
 
     tune.run(
         "PPO",
@@ -127,5 +123,13 @@ if __name__ == "__main__":
         checkpoint_score_attr="training_iteration",
         metric="training_iteration",
         mode="max",
-        callbacks=[] 
+        # 표준 WandB 로거 사용 (메트릭 로깅용)
+        callbacks=[
+            WandbLoggerCallback(
+                project=WANDB_PROJECT,
+                group=WANDB_GROUP,
+                name=EXP_NAME,
+                log_config=True
+            )
+        ]
     )
