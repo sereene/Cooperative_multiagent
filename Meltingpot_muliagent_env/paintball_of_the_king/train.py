@@ -8,19 +8,19 @@ from ray import tune
 from ray.tune.registry import register_env
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.rllib.models import ModelCatalog
-from ray.air.integrations.wandb import WandbLoggerCallback
+# [수정] WandbLoggerCallback 제거
+# from ray.air.integrations.wandb import WandbLoggerCallback 
 from datetime import datetime
 import tensorflow as tf
 
-# [설정] TF GPU 비활성화 (메모리 절약)
+# [설정] TF GPU 비활성화
 tf.config.set_visible_devices([], 'GPU')
 os.environ["TUNE_DISABLE_STRICT_METRIC_CHECKING"] = "1"
 warnings.filterwarnings("ignore", category=UserWarning, module="gymnasium.spaces.box")
 
-# 모듈 임포트
 from env_utils import env_creator
 from CNN_LSTM_model import MeltingPotModel
-from callbacks import SelfPlayCallback  # 수정된 콜백 사용
+from callbacks import SelfPlayCallback
 
 if __name__ == "__main__":
     ray.init(ignore_reinit_error=True)
@@ -41,18 +41,17 @@ if __name__ == "__main__":
     tmp_env.close()
     del tmp_env
 
-    # ======================================================================
-    # [핵심] Self-Play 정책 정의
-    # ======================================================================
+    # WandB 설정 정보
+    WANDB_PROJECT = "MeltingPot_KOTH_SelfPlay"
+    WANDB_GROUP = "Main_vs_Past"
+    EXP_NAME = "MeltingPot_KOTH_SelfPlay_noBot_1e-5_lstm"
+
+    # Self-Play 정책 정의
     policies = {
-        # 1. 메인 정책 (내가 학습할 대상)
         "main_policy": (None, obs_space, act_space, {}),
-        
-        # 2. 적 정책 (과거의 나 - 학습되지 않음, 주기적으로 복사됨)
         "opponent_policy": (None, obs_space, act_space, {}),
     }
 
-    # 매핑 함수: Red팀은 나(Main), Blue팀은 적(Opponent)
     def policy_mapping_fn(agent_id, *args, **kwargs):
         if agent_id in ["player_0", "player_2"]: # Red Team
             return "main_policy"
@@ -61,9 +60,8 @@ if __name__ == "__main__":
 
     current_dir = os.getcwd()
     local_log_dir = os.path.join(current_dir, "results_selfplay")
-    exp_name = "MeltingPot_KOTH_SelfPlay_noBot_1e-5_Fc256"
     start_time = datetime.now().strftime("%m-%d_%H-%M-%S")
-    gif_save_path = os.path.join(local_log_dir, exp_name, f"gifs_{start_time}")
+    gif_save_path = os.path.join(local_log_dir, EXP_NAME, f"gifs_{start_time}")
 
     config = (
         PPOConfig()
@@ -96,36 +94,34 @@ if __name__ == "__main__":
         .multi_agent(
             policies=policies,
             policy_mapping_fn=policy_mapping_fn,
-            # 메인 정책만 학습시킴
             policies_to_train=["main_policy"],
         )
-        # [Callback] 20 Iteration마다 적을 내 수준으로 업데이트
-        .callbacks(lambda: SelfPlayCallback(out_dir=gif_save_path, update_interval_iter=20))
+        # [수정] 콜백에 WandB 설정 전달 (Callback이 직접 init함)
+        .callbacks(lambda: SelfPlayCallback(
+            out_dir=gif_save_path, 
+            update_interval_iter=20,
+            wandb_project=WANDB_PROJECT,
+            wandb_group=WANDB_GROUP,
+            experiment_name=EXP_NAME
+        ))
         .evaluation(evaluation_interval=50, evaluation_num_episodes=1, evaluation_config={"explore": False})
         .resources(num_gpus=1 if torch.cuda.is_available() else 0)
     )
 
-    print(f"### Starting Self-Play Training (Main vs Snapshot). Logs: {local_log_dir} ###")
+    print(f"### Starting Self-Play Training. Logs: {local_log_dir} ###")
 
     tune.run(
         "PPO",
-        name=exp_name,
+        name=EXP_NAME,
         stop={"timesteps_total": 20_000_000},
         local_dir=local_log_dir,
         config=config.to_dict(),
-        checkpoint_freq=50, # 체크포인트도 50번마다 저장
+        checkpoint_freq=50, 
         checkpoint_at_end=True,
         keep_checkpoints_num=3,
         checkpoint_score_attr="training_iteration",
         metric="training_iteration",
         mode="max",
-        callbacks=[
-            WandbLoggerCallback(
-                project="MeltingPot_KOTH_SelfPlay",
-                group="Main_vs_Past",
-                job_type="training",
-                name=exp_name,
-                log_config=True
-            )
-        ]
+        # [수정] WandbLoggerCallback 제거됨
+        callbacks=[] 
     )
