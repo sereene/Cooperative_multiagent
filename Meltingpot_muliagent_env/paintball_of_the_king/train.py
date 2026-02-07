@@ -81,7 +81,6 @@ if __name__ == "__main__":
             compress_observations=True,
             num_rollout_workers=8, 
             rollout_fragment_length=256,
-            sample_timeout_s=600,
         )
         .training(
             _enable_learner_api=False,
