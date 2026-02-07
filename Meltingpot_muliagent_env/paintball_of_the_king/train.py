@@ -62,8 +62,8 @@ if __name__ == "__main__":
     
     # [복구] 타임스탬프가 포함된 GIF 저장 경로 생성
     start_time = datetime.now().strftime("%m-%d_%H-%M-%S")
-    gif_save_path = os.path.join(local_log_dir, EXP_NAME, f"gifs_{start_time}")
-    os.makedirs(gif_save_path, exist_ok=True) # 경로 미리 생성
+    mp4_save_path = os.path.join(local_log_dir, EXP_NAME, f"mp4s_{start_time}")
+    os.makedirs(mp4_save_path, exist_ok=True) # 경로 미리 생성
 
     config = (
         PPOConfig()
