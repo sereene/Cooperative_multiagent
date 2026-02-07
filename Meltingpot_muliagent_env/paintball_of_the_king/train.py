@@ -74,7 +74,6 @@ if __name__ == "__main__":
             compress_observations=True,
             num_rollout_workers=8, 
             rollout_fragment_length=256,
-            sample_timeout_s=600,
         )
         .training(
             _enable_learner_api=False,
@@ -100,7 +99,7 @@ if __name__ == "__main__":
         )
         # [복구] GIF 저장 경로를 콜백에 전달
         .callbacks(lambda: SelfPlayCallback(
-            out_dir=gif_save_path,
+            out_dir=mp4_save_path,
             update_interval_iter=20,
             max_cycles=1000
         ))
@@ -109,7 +108,7 @@ if __name__ == "__main__":
     )
 
     print(f"### Starting Self-Play Training. Logs: {local_log_dir} ###")
-    print(f"### Local GIFs will be saved to: {gif_save_path} ###")
+    print(f"### Local GIFs will be saved to: {mp4_save_path} ###")
 
     tune.run(
         "PPO",
