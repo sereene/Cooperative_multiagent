@@ -19,7 +19,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="gymnasium.spaces
 
 # 모듈 임포트
 from env_utils import env_creator
-from model import MeltingPotModel
+from CNN_LSTM_model import MeltingPotModel
 from callbacks import SelfPlayCallback  # 수정된 콜백 사용
 
 if __name__ == "__main__":
@@ -96,11 +96,11 @@ if __name__ == "__main__":
         .multi_agent(
             policies=policies,
             policy_mapping_fn=policy_mapping_fn,
-            # [중요] 메인 정책만 학습시킴 (메모리 절약 + 안정성)
+            # 메인 정책만 학습시킴
             policies_to_train=["main_policy"],
         )
-        # [Callback] 50 Iteration마다 적을 내 수준으로 업데이트
-        .callbacks(lambda: SelfPlayCallback(out_dir=gif_save_path, update_interval_iter=50))
+        # [Callback] 20 Iteration마다 적을 내 수준으로 업데이트
+        .callbacks(lambda: SelfPlayCallback(out_dir=gif_save_path, update_interval_iter=20))
         .evaluation(evaluation_interval=50, evaluation_num_episodes=1, evaluation_config={"explore": False})
         .resources(num_gpus=1 if torch.cuda.is_available() else 0)
     )
