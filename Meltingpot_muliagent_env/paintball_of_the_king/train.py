@@ -44,7 +44,7 @@ if __name__ == "__main__":
     # WandB 설정 정보
     WANDB_PROJECT = "MeltingPot_KOTH_SelfPlay"
     WANDB_GROUP = "Main_vs_Past"
-    EXP_NAME = "MeltingPot_KOTH_SelfPlay_noBot_1e-5_lstm"
+    EXP_NAME = "MeltingPot_KOTH_SelfPlay_noBot_1e-5_lstm_fc128"
 
     # Self-Play 정책 정의
     policies = {
