@@ -49,7 +49,7 @@ class MeltingPotCallbacks(DefaultCallbacks):
         episode.custom_metrics["occupation_rate_blue"] = episode.user_data["blue_occupation_steps"] / ep_len
 
 # -----------------------------------------------------------------------------
-# [핵심] Self-Play 및 MP4 Video Logging Callback
+# [핵심] Self-Play 및 Video Logging Callback (Trainer 로직 반영)
 # -----------------------------------------------------------------------------
 class SelfPlayCallback(MeltingPotCallbacks):
     def __init__(self, out_dir: str, update_interval_iter: int = 50, max_cycles: int = 1000):
@@ -58,6 +58,9 @@ class SelfPlayCallback(MeltingPotCallbacks):
         self.update_interval_iter = update_interval_iter
         self.max_cycles = max_cycles
         self.eval_count = 0
+        
+        # [설정] Trainer 코드의 gif_name 기본값과 동일하게 설정
+        self.gif_name = "test_rollout" 
         
         self.history_dir = os.path.join(self.out_dir, "policy_history")
         os.makedirs(self.history_dir, exist_ok=True)
@@ -131,20 +134,21 @@ class SelfPlayCallback(MeltingPotCallbacks):
 
                 algorithm.set_weights({"opponent_policy": original_opponent_weights})
 
-        # 4. [MP4 생성 및 WandB 업로드]
+        # 4. [Video 생성] Trainer 코드와 동일한 로직 적용
         if iteration > 0 and iteration % self.update_interval_iter == 0:
             self.eval_count += 1
             if self.eval_count % 5 == 0:
-                # [수정] 확장자를 .mp4로 변경
                 out_path = os.path.join(self.out_dir, f"eval_{self.eval_count:04d}_iter{iteration:06d}.mp4")
-                print(f"🎬 Generating MP4 and Uploading to WandB: {out_path}...")
+                print(f"🎬 Generating Video: {out_path}")
                 
+                # gif_name 인자 전달
                 rollout_and_save_video(
                     algorithm=algorithm, 
                     out_path=out_path, 
                     max_cycles=self.max_cycles, 
                     step=current_step, 
-                    epoch=iteration
+                    epoch=iteration,
+                    gif_name=self.gif_name # "test_rollout"
                 )
 
         gc.collect()
@@ -202,8 +206,7 @@ class SelfPlayCallback(MeltingPotCallbacks):
         return red_wins / num_matches, total_score_diff / num_matches
 
 
-# [핵심] GIF 대신 MP4 저장 로직으로 변경
-def rollout_and_save_video(algorithm, out_path, max_cycles=1000, fps=30, step=None, epoch=None):
+def rollout_and_save_video(algorithm, out_path, max_cycles=1000, fps=30, step=None, epoch=None, gif_name="test_rollout"):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     
     env = env_creator({"substrate": "paintball__king_of_the_hill"})
@@ -246,35 +249,30 @@ def rollout_and_save_video(algorithm, out_path, max_cycles=1000, fps=30, step=No
             if any(terms.values()) or all(truncs.values()) or not obs:
                 break
         
-        # 1. 로컬에 MP4 파일 저장
-        # imageio.mimsave는 확장자가 mp4면 자동으로 ffmpeg 등을 이용해 동영상으로 저장합니다.
-        # (단, ffmpeg가 설치되어 있어야 함. 없으면 gif 추천)
+        # 1. 로컬 저장 (MP4)
         try:
             imageio.mimsave(out_path, frames, fps=fps, macro_block_size=None) 
             print(f"[Video] Saved to local disk: {out_path}")
         except Exception as e:
-            print(f"[Video] Failed to save MP4 (Check ffmpeg): {e}")
+            print(f"[Video] Failed to save MP4: {e}")
             return
         
-        # 2. WandB 업로드 (format="mp4")
+        # 2. [Trainer Logic] WandB 업로드 (명칭 일치: test_rollout/...)
         if wandb.run is not None:
             try:
+                # Trainer 코드의 포맷을 그대로 따름
                 log_data = {
-                    # [수정] format="mp4" 지정
-                    "evaluation/gameplay_video": wandb.Video(out_path, fps=fps, format="mp4", caption=f"Epoch {epoch}"),
-                    "evaluation/total_reward": float(total_reward),
-                    "evaluation/length": int(ep_len),
+                    f"{gif_name}/video": wandb.Video(out_path, fps=fps, format="mp4", caption=f"Epoch {epoch}"),
+                    f"{gif_name}/total_reward": float(total_reward),
+                    f"{gif_name}/length": int(ep_len),
+                    f"{gif_name}/epoch": int(epoch),
                 }
-                
-                if epoch is not None:
-                    log_data["evaluation/epoch"] = int(epoch)
                 
                 if step is not None:
                     wandb.log(log_data, step=step)
-                    print(f"[WandB] 🟢 Uploaded Video & Metrics at step {step}")
+                    print(f"[WandB] 🟢 Uploaded Video to '{gif_name}/video' at step {step}")
                 else:
                     wandb.log(log_data)
-                    print(f"[WandB] 🟢 Uploaded Video & Metrics (no step)")
                     
             except Exception as e:
                 print(f"[WandB] 🔴 Failed to upload Video: {e}")
