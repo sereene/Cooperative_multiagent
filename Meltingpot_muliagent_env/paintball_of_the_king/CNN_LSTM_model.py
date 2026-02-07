@@ -30,9 +30,9 @@ class MeltingPotModel(RecurrentNetwork, nn.Module):
         # 2. MLP (Pre-LSTM)
         # "followed by an MLP with two layers with 64 neurons each"
         self.mlp = nn.Sequential(
-            nn.Linear(cnn_out_dim, 64),
+            nn.Linear(cnn_out_dim, 128),
             nn.ReLU(),
-            nn.Linear(64, 64),
+            nn.Linear(128, 128),
             nn.ReLU()
         )
 
