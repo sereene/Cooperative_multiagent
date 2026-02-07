@@ -3,13 +3,10 @@ import gc
 import copy
 import numpy as np
 import torch
-# [복구] GIF 생성을 위한 imageio 임포트
 import imageio.v2 as imageio
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
 from env_utils import env_creator
-
-# [중요] wandb 임포트는 제거합니다. (워커 충돌 방지)
-# import wandb 
+import wandb 
 
 class MeltingPotCallbacks(DefaultCallbacks):
     """기본 메트릭 집계 콜백"""
@@ -20,7 +17,6 @@ class MeltingPotCallbacks(DefaultCallbacks):
         episode.user_data["blue_occupation_steps"] = 0
 
     def on_episode_step(self, *, worker, base_env, policies, episode, **kwargs):
-        # 1. 교전 횟수 집계
         for i in range(4):
             agent_id = f"player_{i}"
             info = episode.last_info_for(agent_id)
@@ -29,7 +25,6 @@ class MeltingPotCallbacks(DefaultCallbacks):
                     if isinstance(event, dict) and event.get("name") == "removal":
                         episode.user_data[f"deaths_{agent_id}"] += 1
 
-        # 2. 점령률 집계
         r0 = 0.0
         try:
             r0 = episode.prev_reward_for("player_0")
@@ -45,7 +40,6 @@ class MeltingPotCallbacks(DefaultCallbacks):
             episode.user_data["blue_occupation_steps"] += 1
 
     def on_episode_end(self, *, worker, base_env, policies, episode, **kwargs):
-        # WandbLoggerCallback이 이 값들을 자동으로 가져가서 로깅합니다.
         episode.custom_metrics["score"] = episode.total_reward
         total_deaths = sum(episode.user_data.get(f"deaths_player_{i}", 0) for i in range(4))
         episode.custom_metrics["total_zaps_in_episode"] = total_deaths
@@ -55,18 +49,16 @@ class MeltingPotCallbacks(DefaultCallbacks):
         episode.custom_metrics["occupation_rate_blue"] = episode.user_data["blue_occupation_steps"] / ep_len
 
 # -----------------------------------------------------------------------------
-# [핵심] Self-Play 및 과거 정책 대결 + 로컬 GIF 저장
+# [핵심] Self-Play 및 MP4 Video Logging Callback
 # -----------------------------------------------------------------------------
 class SelfPlayCallback(MeltingPotCallbacks):
     def __init__(self, out_dir: str, update_interval_iter: int = 50, max_cycles: int = 1000):
         super().__init__()
-        # [복구] train.py에서 전달받은 GIF 저장 경로
         self.out_dir = out_dir 
         self.update_interval_iter = update_interval_iter
         self.max_cycles = max_cycles
         self.eval_count = 0
         
-        # 정책 히스토리 저장 경로
         self.history_dir = os.path.join(self.out_dir, "policy_history")
         os.makedirs(self.history_dir, exist_ok=True)
         self.history_index = [] 
@@ -79,6 +71,7 @@ class SelfPlayCallback(MeltingPotCallbacks):
 
     def on_train_result(self, *, algorithm, result, **kwargs):
         iteration = result.get("training_iteration", 0)
+        current_step = result.get("timesteps_total", 0)
         
         # 1. [History] 정책 저장
         if iteration % self.update_interval_iter == 0:
@@ -131,24 +124,28 @@ class SelfPlayCallback(MeltingPotCallbacks):
                 win_rate, avg_score = self._run_duel(algorithm, num_matches=3)
                 print(f"   >>> Result: Win Rate {win_rate*100:.1f}%, Score Diff {avg_score:.1f}")
 
-                # WandbLoggerCallback이깅할 수 있도록 custom_metrics에 추가
                 if "custom_metrics" not in result:
                     result["custom_metrics"] = {}
-                
                 result["custom_metrics"]["eval_vs_past/win_rate"] = win_rate
                 result["custom_metrics"]["eval_vs_past/score_diff"] = avg_score
 
                 algorithm.set_weights({"opponent_policy": original_opponent_weights})
 
-        # 4. [복구됨] GIF 생성 및 로컬 저장 호출
+        # 4. [MP4 생성 및 WandB 업로드]
         if iteration > 0 and iteration % self.update_interval_iter == 0:
             self.eval_count += 1
             if self.eval_count % 5 == 0:
-                # 파일 이름 생성 (iteration 포함)
-                out_path = os.path.join(self.out_dir, f"eval_{self.eval_count:04d}_iter{iteration:06d}.gif")
-                print(f"🎬 Generating GIF to local path: {out_path}...")
-                # GIF 생성 함수 호출
-                rollout_and_save_gif(algorithm=algorithm, out_path=out_path, max_cycles=self.max_cycles)
+                # [수정] 확장자를 .mp4로 변경
+                out_path = os.path.join(self.out_dir, f"eval_{self.eval_count:04d}_iter{iteration:06d}.mp4")
+                print(f"🎬 Generating MP4 and Uploading to WandB: {out_path}...")
+                
+                rollout_and_save_video(
+                    algorithm=algorithm, 
+                    out_path=out_path, 
+                    max_cycles=self.max_cycles, 
+                    step=current_step, 
+                    epoch=iteration
+                )
 
         gc.collect()
         if torch.cuda.is_available():
@@ -204,14 +201,17 @@ class SelfPlayCallback(MeltingPotCallbacks):
         
         return red_wins / num_matches, total_score_diff / num_matches
 
-# [복구됨] GIF 생성 함수
-def rollout_and_save_gif(algorithm, out_path, max_cycles=1000, fps=30):
-    # 디렉토리가 없으면 생성
+
+# [핵심] GIF 대신 MP4 저장 로직으로 변경
+def rollout_and_save_video(algorithm, out_path, max_cycles=1000, fps=30, step=None, epoch=None):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     
     env = env_creator({"substrate": "paintball__king_of_the_hill"})
     frames = []
     agent_states = {}
+    
+    total_reward = 0.0
+    ep_len = 0
     
     try:
         obs, _ = env.reset()
@@ -234,7 +234,11 @@ def rollout_and_save_gif(algorithm, out_path, max_cycles=1000, fps=30):
                 actions[agent_id] = res[0] if isinstance(res, tuple) else res
                 agent_states[agent_id] = res[1] if isinstance(res, tuple) else agent_states[agent_id]
             
-            obs, _, terms, truncs, _ = env.step(actions)
+            obs, rewards, terms, truncs, _ = env.step(actions)
+            
+            if rewards:
+                total_reward += sum(rewards.values())
+            ep_len += 1
             
             fr = env.par_env.render()
             if fr is not None: frames.append(fr)
@@ -242,12 +246,38 @@ def rollout_and_save_gif(algorithm, out_path, max_cycles=1000, fps=30):
             if any(terms.values()) or all(truncs.values()) or not obs:
                 break
         
-        # [핵심] 로컬에 GIF 파일 저장
-        imageio.mimsave(out_path, frames, fps=fps)
-        print(f"[GIF] Saved to local disk: {out_path}")
+        # 1. 로컬에 MP4 파일 저장
+        # imageio.mimsave는 확장자가 mp4면 자동으로 ffmpeg 등을 이용해 동영상으로 저장합니다.
+        # (단, ffmpeg가 설치되어 있어야 함. 없으면 gif 추천)
+        try:
+            imageio.mimsave(out_path, frames, fps=fps, macro_block_size=None) 
+            print(f"[Video] Saved to local disk: {out_path}")
+        except Exception as e:
+            print(f"[Video] Failed to save MP4 (Check ffmpeg): {e}")
+            return
         
-        # [수정] WandB 업로드 코드 제거됨
-        # 이전에 있던 try: wandb.log(...) except: 블록이 여기에서 삭제되었습니다.
+        # 2. WandB 업로드 (format="mp4")
+        if wandb.run is not None:
+            try:
+                log_data = {
+                    # [수정] format="mp4" 지정
+                    "evaluation/gameplay_video": wandb.Video(out_path, fps=fps, format="mp4", caption=f"Epoch {epoch}"),
+                    "evaluation/total_reward": float(total_reward),
+                    "evaluation/length": int(ep_len),
+                }
+                
+                if epoch is not None:
+                    log_data["evaluation/epoch"] = int(epoch)
+                
+                if step is not None:
+                    wandb.log(log_data, step=step)
+                    print(f"[WandB] 🟢 Uploaded Video & Metrics at step {step}")
+                else:
+                    wandb.log(log_data)
+                    print(f"[WandB] 🟢 Uploaded Video & Metrics (no step)")
+                    
+            except Exception as e:
+                print(f"[WandB] 🔴 Failed to upload Video: {e}")
 
     finally:
         env.close()
