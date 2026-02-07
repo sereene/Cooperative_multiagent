@@ -87,7 +87,9 @@ class MeltingPotModel(RecurrentNetwork, nn.Module):
 
     def forward(self, input_dict, state, seq_lens):
         # 1. 입력 데이터 가져오기 및 정규화
-        x = input_dict["obs"]["RGB"].float()
+        # [수정됨] env_utils에서 이미 "RGB"만 추출해서 보냅니다. 따라서 ["RGB"] 키 접근을 제거해야 합니다.
+        x = input_dict["obs"].float()
+        
         if x.max() > 10.0: 
             x = x / 255.0 
 
@@ -116,7 +118,7 @@ class MeltingPotModel(RecurrentNetwork, nn.Module):
         # 6. RNN Pass
         logits, new_state = self.forward_rnn(x, state, seq_lens)
         
-        # 7. [핵심 수정] Output Flattening: [B, T, Out] -> [B * T, Out]
+        # 7. Output Flattening: [B, T, Out] -> [B * T, Out]
         # RLlib은 forward 결과가 평탄화된 2차원 텐서여야 합니다.
         logits = logits.reshape(B * T, -1)
         self._value_out = self._value_out.reshape(B * T)
