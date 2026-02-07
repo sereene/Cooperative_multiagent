@@ -7,7 +7,7 @@ import torch
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
 from env_utils import env_creator
 
-# [필수] WandB 연동을 위해 임포트
+# [필수] WandB 임포트
 import wandb 
 
 class MeltingPotCallbacks(DefaultCallbacks):
@@ -53,15 +53,30 @@ class MeltingPotCallbacks(DefaultCallbacks):
         episode.custom_metrics["occupation_rate_blue"] = episode.user_data["blue_occupation_steps"] / ep_len
 
 # -----------------------------------------------------------------------------
-# [핵심] Self-Play + Past Evaluation + WandB GIF 업로드
+# [핵심] Self-Play + Past Evaluation + WandB GIF 업로드 (직접 Init)
 # -----------------------------------------------------------------------------
 class SelfPlayCallback(MeltingPotCallbacks):
-    def __init__(self, out_dir: str, update_interval_iter: int = 50, max_cycles: int = 1000):
+    def __init__(self, out_dir: str, 
+                 update_interval_iter: int = 50, 
+                 max_cycles: int = 1000,
+                 wandb_project: str = None,
+                 wandb_group: str = None,
+                 experiment_name: str = None):
         super().__init__()
         self.out_dir = out_dir
         self.update_interval_iter = update_interval_iter
         self.max_cycles = max_cycles
         self.eval_count = 0
+        
+        # [수정] WandB 직접 초기화 (세션 보장)
+        if wandb_project and wandb.run is None:
+            print(f"🚀 [Callback] Initializing WandB manually: {experiment_name}")
+            wandb.init(
+                project=wandb_project,
+                group=wandb_group,
+                name=experiment_name,
+                reinit=True
+            )
         
         self.history_dir = os.path.join(out_dir, "policy_history")
         os.makedirs(self.history_dir, exist_ok=True)
@@ -75,10 +90,24 @@ class SelfPlayCallback(MeltingPotCallbacks):
 
     def on_train_result(self, *, algorithm, result, **kwargs):
         iteration = result.get("training_iteration", 0)
-        # [수정 1] 현재 타임스텝 가져오기
         current_step = result.get("timesteps_total", 0)
         
-        # 1. [History] 현재 정책 저장
+        # [추가] 기본 학습 지표도 직접 로깅 (WandBLoggerCallback 제거 시 필수)
+        if wandb.run is not None:
+            log_payload = {
+                "train/episode_reward_mean": result.get("episode_reward_mean"),
+                "train/episode_len_mean": result.get("episode_len_mean"),
+                "train/training_iteration": iteration,
+                "train/timesteps_total": current_step
+            }
+            # 커스텀 메트릭 추가
+            if "custom_metrics" in result:
+                for k, v in result["custom_metrics"].items():
+                    log_payload[f"custom_metrics/{k}"] = v
+            
+            wandb.log(log_payload, step=current_step)
+
+        # 1. [History] 정책 저장
         if iteration % self.update_interval_iter == 0:
             main_weights = self._get_pure_weights(algorithm, "main_policy")
             save_path = os.path.join(self.history_dir, f"weights_iter_{iteration}.pt")
@@ -98,7 +127,7 @@ class SelfPlayCallback(MeltingPotCallbacks):
             main_weights = self._get_pure_weights(algorithm, "main_policy")
             algorithm.set_weights({"opponent_policy": main_weights})
 
-        # 3. [Past Evaluation] 과거의 나랑 싸우기
+        # 3. [Past Evaluation] 과거 정책 대결
         target_lag = 100 
         if iteration >= target_lag and iteration % self.update_interval_iter == 0:
             target_iter = iteration - target_lag
@@ -126,37 +155,26 @@ class SelfPlayCallback(MeltingPotCallbacks):
                 
                 algorithm.set_weights({"opponent_policy": past_weights})
                 
+                # [수정] 평가 횟수 3회로 증가
                 win_rate, avg_score = self._run_duel(algorithm, num_matches=3)
-                print(f"   >>> Result: Win Rate {win_rate*100:.1f}%, Score {avg_score:.1f}")
+                print(f"   >>> Result: Win Rate {win_rate*100:.1f}%, Score Diff {avg_score:.1f}")
 
-                if "custom_metrics" not in result:
-                    result["custom_metrics"] = {}
-                result["custom_metrics"]["win_rate_vs_past_100"] = win_rate
-                result["custom_metrics"]["score_vs_past_100"] = avg_score
-                
-                result["win_rate_vs_past_100"] = win_rate
-                result["score_vs_past_100"] = avg_score
-
-                # [수정 2] Past Evaluation 로그도 step 명시
-                try:
-                    if wandb.run is not None:
-                        wandb.log({
-                            "eval_vs_past/win_rate": win_rate,
-                            "eval_vs_past/score_diff": avg_score,
-                            "iteration": iteration
-                        }, step=current_step)
-                except Exception as e:
-                    pass 
+                # WandB 로깅 (step 명시)
+                if wandb.run is not None:
+                    wandb.log({
+                        "eval_vs_past/win_rate": win_rate,
+                        "eval_vs_past/score_diff": avg_score,
+                    }, step=current_step)
+                    print(f"   [WandB] Logged duel metrics at step {current_step}")
 
                 algorithm.set_weights({"opponent_policy": original_opponent_weights})
 
-        # 4. [GIF 생성] 
+        # 4. [GIF 생성]
         if iteration > 0 and iteration % self.update_interval_iter == 0:
             self.eval_count += 1
             if self.eval_count % 5 == 0:
                 out_path = os.path.join(self.out_dir, f"eval_{self.eval_count:04d}_iter{iteration:06d}.gif")
                 print(f"🎬 Generating GIF to {out_path}...")
-                # [수정 3] step 인자 전달
                 rollout_and_save_gif(algorithm=algorithm, out_path=out_path, max_cycles=self.max_cycles, step=current_step)
 
         gc.collect()
@@ -164,9 +182,8 @@ class SelfPlayCallback(MeltingPotCallbacks):
             torch.cuda.empty_cache()
 
     def _run_duel(self, algorithm, num_matches=1):
-        """평가를 위해 별도로 게임을 돌리는 함수"""
         env = env_creator({"substrate": "paintball__king_of_the_hill"})
-        red_wins = 0.0 # float로 변경
+        red_wins = 0.0
         total_score_diff = 0
         
         try:
@@ -184,9 +201,9 @@ class SelfPlayCallback(MeltingPotCallbacks):
                             policy = algorithm.get_policy(policy_id)
                             agent_states[agent_id] = policy.get_initial_state()
                         
-                        # [TIP] 평가 시에는 explore=False 권장 (결정론적 행동)
+                        # 평가 시 Deterministic=False (조금의 랜덤성 허용) or True (완전 고정)
                         res = algorithm.compute_single_action(
-                            agent_obs, state=agent_states[agent_id], policy_id=policy_id, explore=False
+                            agent_obs, state=agent_states[agent_id], policy_id=policy_id, explore=True
                         )
                         actions[agent_id] = res[0] if isinstance(res, tuple) else res
                         agent_states[agent_id] = res[1] if isinstance(res, tuple) else agent_states[agent_id]
@@ -200,12 +217,14 @@ class SelfPlayCallback(MeltingPotCallbacks):
                     if any(terms.values()) or all(truncs.values()) or not obs:
                         break
                 
-                # [TIP] 무승부(0vs0) 처리 추가
-                if score_red > score_blue: 
+                # [승패 판정]
+                if score_red > score_blue:
                     red_wins += 1.0
-                elif score_red == score_blue and score_red != 0: # 점수가 났는데 동점인 경우
-                    red_wins += 0.5
-                
+                elif score_red == score_blue and (score_red > 0 or score_blue > 0):
+                    red_wins += 0.5 # 득점 있는 무승부
+                elif score_red == score_blue:
+                    red_wins += 0.5 # 0:0 무승부도 0.5 처리 (지표 0 방지용)
+
                 total_score_diff += (score_red - score_blue)
                 
         finally:
@@ -214,7 +233,6 @@ class SelfPlayCallback(MeltingPotCallbacks):
         
         return red_wins / num_matches, total_score_diff / num_matches
 
-# [수정 4] 함수 정의에 step 파라미터 추가
 def rollout_and_save_gif(algorithm, out_path, max_cycles=1000, fps=30, step=None):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     env = env_creator({"substrate": "paintball__king_of_the_hill"})
@@ -251,22 +269,24 @@ def rollout_and_save_gif(algorithm, out_path, max_cycles=1000, fps=30, step=None
                 break
         
         imageio.mimsave(out_path, frames, fps=fps)
-        print(f"[GIF] Saved: {out_path}")
+        print(f"[GIF] Saved to disk: {out_path}")
         
-        # [수정 5] WandB에 로그 시 step 명시
+        # [WandB 업로드]
         try:
             if wandb.run is not None:
-                log_data = {
-                    "evaluation/gameplay_gif": wandb.Video(out_path, fps=fps, format="gif", caption=f"Eval Replay (Step {step})")
-                }
+                # Video 객체 생성
+                video = wandb.Video(out_path, fps=fps, format="gif", caption=f"Step {step}")
+                
+                # step 명시하여 로깅
                 if step is not None:
-                    wandb.log(log_data, step=step)
-                    print(f"[WandB] Logged GIF at step {step}")
+                    wandb.log({"evaluation/gameplay_gif": video}, step=step)
+                    print(f"[WandB] 🟢 Uploaded GIF at step {step}")
                 else:
-                    wandb.log(log_data)
-                    print(f"[WandB] Logged GIF (no step)")
+                    wandb.log({"evaluation/gameplay_gif": video})
+            else:
+                print("[WandB] 🔴 WandB run is None. Cannot upload GIF.")
         except Exception as e:
-            print(f"[Warning] Failed to upload GIF to WandB: {e}")
+            print(f"[WandB] 🔴 Failed to upload GIF: {e}")
 
     finally:
         env.close()
