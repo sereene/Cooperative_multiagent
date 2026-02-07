@@ -31,7 +31,7 @@ if __name__ == "__main__":
     # WandB 설정 정보
     WANDB_PROJECT = "MeltingPot_KOTH_SelfPlay"
     WANDB_GROUP = "Main_vs_Past"
-    EXP_NAME = "MeltingPot_KOTH_SelfPlay_noBot_1e-5_Fc256"
+    EXP_NAME = "MeltingPot_KOTH_SelfPlay_noBot_1e-5_lstm_Fc128"
 
     # [수정] 메인 프로세스에서 WandB 직접 초기화 (워커 충돌 방지)
     if wandb.run is None:
