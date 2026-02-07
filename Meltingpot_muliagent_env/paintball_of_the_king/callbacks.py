@@ -4,6 +4,7 @@ import copy
 import numpy as np
 import torch
 import imageio.v2 as imageio
+import tempfile  # tempfile 모듈 추가
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
 from env_utils import env_creator
 import wandb 
@@ -49,7 +50,7 @@ class MeltingPotCallbacks(DefaultCallbacks):
         episode.custom_metrics["occupation_rate_blue"] = episode.user_data["blue_occupation_steps"] / ep_len
 
 # -----------------------------------------------------------------------------
-# [핵심] Self-Play 및 Video Logging Callback (Trainer 로직 반영)
+# [핵심] Self-Play 및 Video Logging Callback
 # -----------------------------------------------------------------------------
 class SelfPlayCallback(MeltingPotCallbacks):
     def __init__(self, out_dir: str, update_interval_iter: int = 50, max_cycles: int = 1000):
@@ -59,8 +60,8 @@ class SelfPlayCallback(MeltingPotCallbacks):
         self.max_cycles = max_cycles
         self.eval_count = 0
         
-        # [설정] Trainer 코드의 gif_name 기본값과 동일하게 설정
-        self.gif_name = "test_rollout" 
+        # [설정] WandB 로깅 시 사용할 접두사 (gif_name 역할)
+        self.video_name = "test_rollout" 
         
         self.history_dir = os.path.join(self.out_dir, "policy_history")
         os.makedirs(self.history_dir, exist_ok=True)
@@ -134,21 +135,21 @@ class SelfPlayCallback(MeltingPotCallbacks):
 
                 algorithm.set_weights({"opponent_policy": original_opponent_weights})
 
-        # 4. [Video 생성] Trainer 코드와 동일한 로직 적용
+        # 4. [Video 생성] - tempfile 버전 로직 적용
         if iteration > 0 and iteration % self.update_interval_iter == 0:
             self.eval_count += 1
             if self.eval_count % 5 == 0:
-                out_path = os.path.join(self.out_dir, f"eval_{self.eval_count:04d}_iter{iteration:06d}.mp4")
-                print(f"🎬 Generating Video: {out_path}")
+                print(f"🎬 Generating Video (Iter {iteration})...")
                 
-                # gif_name 인자 전달
+                # rollout_and_save_video 함수 호출
+                # target_dir 인자로 self.out_dir 전달
                 rollout_and_save_video(
                     algorithm=algorithm, 
-                    out_path=out_path, 
+                    target_dir=self.out_dir, 
                     max_cycles=self.max_cycles, 
                     step=current_step, 
                     epoch=iteration,
-                    gif_name=self.gif_name # "test_rollout"
+                    video_name=self.video_name 
                 )
 
         gc.collect()
@@ -205,79 +206,139 @@ class SelfPlayCallback(MeltingPotCallbacks):
         
         return red_wins / num_matches, total_score_diff / num_matches
 
+# -----------------------------------------------------------------------------
+# [함수] Video Rollout 및 WandB 업로드 (tempfile 버전)
+# -----------------------------------------------------------------------------
+def rollout_and_save_video(algorithm, target_dir, max_cycles=1000, fps=30, step=None, epoch=None, video_name="test_rollout"):
+    if wandb is None or wandb.run is None:
+        return
 
-def rollout_and_save_video(algorithm, out_path, max_cycles=1000, fps=30, step=None, epoch=None, gif_name="test_rollout"):
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    
+    # Create Environment
     env = env_creator({"substrate": "paintball__king_of_the_hill"})
+    
     frames = []
-    agent_states = {}
-    
     total_reward = 0.0
-    ep_len = 0
-    
+    t = 0
+    agent_states = {}
+
     try:
-        obs, _ = env.reset()
-        if not obs: return
-        
-        fr = env.par_env.render()
-        if fr is not None: frames.append(fr)
-        
-        for _ in range(max_cycles):
-            actions = {}
-            for agent_id, agent_obs in obs.items():
-                policy_id = algorithm.config.policy_mapping_fn(agent_id)
-                if agent_id not in agent_states:
-                    policy = algorithm.get_policy(policy_id)
-                    agent_states[agent_id] = policy.get_initial_state()
-                
-                res = algorithm.compute_single_action(
-                    agent_obs, state=agent_states[agent_id], policy_id=policy_id, explore=True
-                )
-                actions[agent_id] = res[0] if isinstance(res, tuple) else res
-                agent_states[agent_id] = res[1] if isinstance(res, tuple) else agent_states[agent_id]
-            
-            obs, rewards, terms, truncs, _ = env.step(actions)
-            
-            if rewards:
-                total_reward += sum(rewards.values())
-            ep_len += 1
-            
-            fr = env.par_env.render()
-            if fr is not None: frames.append(fr)
-            
-            if any(terms.values()) or all(truncs.values()) or not obs:
-                break
-        
-        # 1. 로컬 저장 (MP4)
+        # 1. Start / Reset
         try:
-            imageio.mimsave(out_path, frames, fps=fps, macro_block_size=None) 
-            print(f"[Video] Saved to local disk: {out_path}")
+            obs, info = env.reset()
         except Exception as e:
-            print(f"[Video] Failed to save MP4: {e}")
+            print(f"[Video] start_failed: {repr(e)}")
             return
         
-        # 2. [Trainer Logic] WandB 업로드 (명칭 일치: test_rollout/...)
-        if wandb.run is not None:
+        if not obs:
+            return
+
+        done = False
+        
+        # 2. Loop
+        while (not done) and (t < max_cycles):
+            # Render offscreen
             try:
-                # Trainer 코드의 포맷을 그대로 따름
-                log_data = {
-                    f"{gif_name}/video": wandb.Video(out_path, fps=fps, format="mp4", caption=f"Epoch {epoch}"),
-                    f"{gif_name}/total_reward": float(total_reward),
-                    f"{gif_name}/length": int(ep_len),
-                    f"{gif_name}/epoch": int(epoch),
-                }
-                
-                if step is not None:
-                    wandb.log(log_data, step=step)
-                    print(f"[WandB] 🟢 Uploaded Video to '{gif_name}/video' at step {step}")
-                else:
-                    wandb.log(log_data)
+                frame = env.par_env.render()
+                if frame is not None:
+                    frames.append(frame)
+            except Exception:
+                pass
+
+            # Compute Actions
+            actions = {}
+            try:
+                for agent_id, agent_obs in obs.items():
+                    policy_id = algorithm.config.policy_mapping_fn(agent_id)
+                    if agent_id not in agent_states:
+                        policy = algorithm.get_policy(policy_id)
+                        agent_states[agent_id] = policy.get_initial_state()
                     
+                    res = algorithm.compute_single_action(
+                        agent_obs, state=agent_states[agent_id], policy_id=policy_id, explore=True
+                    )
+                    actions[agent_id] = res[0] if isinstance(res, tuple) else res
+                    agent_states[agent_id] = res[1] if isinstance(res, tuple) else agent_states[agent_id]
             except Exception as e:
-                print(f"[WandB] 🔴 Failed to upload Video: {e}")
+                print(f"[Video] action_failed: {repr(e)}")
+                break
+
+            if not actions:
+                print("[Video] action_failed: actions is empty")
+                break
+
+            # Step
+            try:
+                obs, rewards, terms, truncs, info = env.step(actions)
+            except Exception as e:
+                print(f"[Video] step_failed: {repr(e)}")
+                break
+            
+            # Aggregate Reward
+            try:
+                if rewards:
+                    total_reward += sum(rewards.values())
+            except Exception:
+                pass
+
+            # Check Done
+            try:
+                if any(terms.values()) or all(truncs.values()) or not obs:
+                    done = True
+            except Exception:
+                done = False
+            
+            t += 1
 
     finally:
         env.close()
-        del env, agent_states, obs, frames
-        gc.collect()
+        del env
+
+    if len(frames) < 2:
+        print(f"[Video] Rollout too short: frames={len(frames)}")
+        return
+
+    # 3. Write MP4 using tempfile (as requested)
+    # 디렉토리가 없으면 생성
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+        log_dir = target_dir
+    except Exception:
+        log_dir = "."
+
+    # tempfile 생성 (delete=False로 설정하여 파일 유지)
+    with tempfile.NamedTemporaryFile(suffix=".mp4", dir=log_dir, delete=False) as f:
+        video_path = f.name
+
+    # Save using imageio (mimsave)
+    try:
+        # macro_block_size=None ensures better compatibility for odd dimensions
+        imageio.mimsave(video_path, frames, fps=fps, macro_block_size=None)
+        print(f"[Video] Saved to local disk (temp): {video_path}")
+    except Exception as e:
+        try:
+            if os.path.exists(video_path):
+                os.remove(video_path)
+        except Exception:
+            pass
+        print(f"[Video] write_failed(imageio): {repr(e)}")
+        return
+
+    # 4. Upload to WandB
+    # 요청하신 코드의 dict 키 형식 그대로 적용
+    try:
+        wandb.log(
+            {
+                f"{video_name}/video": wandb.Video(video_path, fps=fps, format="mp4", caption=f"Epoch {epoch}"),
+                f"{video_name}/total_reward": float(total_reward),
+                f"{video_name}/length": int(t),
+                f"{video_name}/epoch": int(epoch),
+            },
+            step=int(step) if step is not None else None,
+        )
+        print(f"[WandB] 🟢 Uploaded Video to '{video_name}/video' at step {step}")
+    except Exception as e:
+        print(f"[Video] wandb_log_failed: {repr(e)}")
+
+    # Cleanup memory
+    del frames
+    gc.collect()
