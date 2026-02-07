@@ -8,10 +8,9 @@ from ray import tune
 from ray.tune.registry import register_env
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.rllib.models import ModelCatalog
-# [수정] WandbLoggerCallback 제거
-# from ray.air.integrations.wandb import WandbLoggerCallback 
 from datetime import datetime
 import tensorflow as tf
+import wandb # WandB 임포트
 
 # [설정] TF GPU 비활성화
 tf.config.set_visible_devices([], 'GPU')
@@ -29,6 +28,21 @@ if __name__ == "__main__":
     env_name = "meltingpot_paintball_koth_mixed"
     register_env(env_name, lambda cfg: env_creator({"substrate": "paintball__king_of_the_hill"}))
 
+    # WandB 설정 정보
+    WANDB_PROJECT = "MeltingPot_KOTH_SelfPlay"
+    WANDB_GROUP = "Main_vs_Past"
+    EXP_NAME = "MeltingPot_KOTH_SelfPlay_noBot_1e-5_Fc256"
+
+    # [수정] 메인 프로세스에서 WandB 직접 초기화 (워커 충돌 방지)
+    if wandb.run is None:
+        print(f"🚀 Initializing WandB: {EXP_NAME}")
+        wandb.init(
+            project=WANDB_PROJECT,
+            group=WANDB_GROUP,
+            name=EXP_NAME,
+            reinit=True
+        )
+
     # 환경 스펙 확인
     tmp_env = env_creator({"substrate": "paintball__king_of_the_hill"})
     if hasattr(tmp_env, "possible_agents"):
@@ -40,11 +54,6 @@ if __name__ == "__main__":
     act_space = tmp_env.par_env.action_spaces[agent_id]
     tmp_env.close()
     del tmp_env
-
-    # WandB 설정 정보
-    WANDB_PROJECT = "MeltingPot_KOTH_SelfPlay"
-    WANDB_GROUP = "Main_vs_Past"
-    EXP_NAME = "MeltingPot_KOTH_SelfPlay_noBot_1e-5_lstm_fc128"
 
     # Self-Play 정책 정의
     policies = {
@@ -72,6 +81,7 @@ if __name__ == "__main__":
             compress_observations=True,
             num_rollout_workers=8, 
             rollout_fragment_length=256,
+            sample_timeout_s=600,
         )
         .training(
             _enable_learner_api=False,
@@ -95,13 +105,10 @@ if __name__ == "__main__":
             policy_mapping_fn=policy_mapping_fn,
             policies_to_train=["main_policy"],
         )
-        # [수정] 콜백에 WandB 설정 전달 (Callback이 직접 init함)
+        # [수정] 콜백 생성 시 wandb 인자 제거 (이미 init됨)
         .callbacks(lambda: SelfPlayCallback(
             out_dir=gif_save_path, 
-            update_interval_iter=20,
-            wandb_project=WANDB_PROJECT,
-            wandb_group=WANDB_GROUP,
-            experiment_name=EXP_NAME
+            update_interval_iter=20
         ))
         .evaluation(evaluation_interval=50, evaluation_num_episodes=1, evaluation_config={"explore": False})
         .resources(num_gpus=1 if torch.cuda.is_available() else 0)
@@ -121,6 +128,5 @@ if __name__ == "__main__":
         checkpoint_score_attr="training_iteration",
         metric="training_iteration",
         mode="max",
-        # [수정] WandbLoggerCallback 제거됨
         callbacks=[] 
     )
