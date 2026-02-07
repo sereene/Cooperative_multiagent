@@ -277,8 +277,8 @@ def env_creator(config=None):
     # 2. RGB만 남기기 (Dict -> Box)
     env = MeltingPotRGBWrapper(env)
 
-    # 3. 프레임 스택 (Box -> Box 12ch)
-    env = FrameStackWrapper(env, num_stack=3)
+    # # 3. 프레임 스택 (Box -> Box 12ch)
+    # env = FrameStackWrapper(env, num_stack=3)
     
     # 4. 호환성 래퍼
     env = ShimmyCompatibilityWrapper(env)
