@@ -39,7 +39,7 @@ class MeltingPotModel(RecurrentNetwork, nn.Module):
         # 3. LSTM
         # "followed by an LSTM with 128 units"
         self.lstm_state_size = 128
-        self.lstm = nn.LSTM(64, self.lstm_state_size, batch_first=True)
+        self.lstm = nn.LSTM(128, self.lstm_state_size, batch_first=True)
 
         # 4. Heads (Policy & Value)
         self.policy_head = nn.Linear(self.lstm_state_size, num_outputs)
