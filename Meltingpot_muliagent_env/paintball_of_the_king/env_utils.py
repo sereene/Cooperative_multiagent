@@ -142,7 +142,7 @@
 
 #     env = MeltingPotRGBWrapper(env)
 
-#     # env = FrameStackWrapper(env, num_stack=3)
+#     env = FrameStackWrapper(env, num_stack=3)
     
 #     # 3. [에러 해결] 호환성 래퍼 (KeyError 및 Obs Space 오류 해결)
 #     env = ShimmyCompatibilityWrapper(env)
@@ -277,8 +277,8 @@ def env_creator(config=None):
     # 2. RGB만 남기기 (Dict -> Box)
     env = MeltingPotRGBWrapper(env)
 
-    # # 3. 프레임 스택 (Box -> Box 12ch)
-    # env = FrameStackWrapper(env, num_stack=3)
+    # 3. 프레임 스택 (Box -> Box 12ch)
+    env = FrameStackWrapper(env, num_stack=4)
     
     # 4. 호환성 래퍼
     env = ShimmyCompatibilityWrapper(env)
