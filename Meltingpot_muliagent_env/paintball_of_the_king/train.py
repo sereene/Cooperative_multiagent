@@ -31,7 +31,7 @@ if __name__ == "__main__":
     # WandB 설정 정보
     WANDB_PROJECT = "MeltingPot_KOTH_SelfPlay"
     WANDB_GROUP = "Main_vs_Past"
-    EXP_NAME = "MeltingPot_KOTH_SelfPlay_noBot_5e-6_framestack4"
+    EXP_NAME = "MeltingPot_KOTH_SelfPlay_noBot_1e-5_framestack4"
 
     # 환경 스펙 확인
     tmp_env = env_creator({"substrate": "paintball__king_of_the_hill"})
@@ -72,7 +72,7 @@ if __name__ == "__main__":
         .rl_module(_enable_rl_module_api=False)
         .rollouts(
             compress_observations=True,
-            num_rollout_workers=8, 
+            num_rollout_workers=6, 
             rollout_fragment_length=256,
         )
         .training(
@@ -88,7 +88,7 @@ if __name__ == "__main__":
             kl_coeff=0.2,
             clip_param=0.2,
             entropy_coeff=0.01, 
-            train_batch_size=8*256, 
+            train_batch_size=6*256, 
             sgd_minibatch_size=256,
             num_sgd_iter=10,
         )
