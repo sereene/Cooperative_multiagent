@@ -82,7 +82,7 @@ if __name__ == "__main__":
                 "max_seq_len": 100,
                 "vf_share_layers": False
             },
-            lr=5e-6,
+            lr=1e-5,
             gamma=0.99,
             lambda_=0.95,
             kl_coeff=0.2,
