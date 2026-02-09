@@ -14,34 +14,30 @@ class MeltingPotModel(TorchModelV2, nn.Module):
         TorchModelV2.__init__(self, obs_space, action_space, num_outputs, model_config, name)
         nn.Module.__init__(self)
 
-        # RLLib이 FrameStack을 적용하면 채널 수가 늘어납니다. (예: 12)
         in_channels = obs_space.shape[2] 
 
-        # 1. CNN Layers 정의
+        # CNN Layers 
         self.conv_layers = nn.Sequential(
             # [88,88,12] -> [11,11,16]
             nn.Conv2d(in_channels, 16, kernel_size=8, stride=8),
             nn.ReLU(),
-            # stride=2인 경우: [11,11,16] -> [4,4,32] (512)
-            # stride=1인 경우: [11,11,16] -> [8,8,32] (2048)
             nn.Conv2d(16, 32, kernel_size=4, stride=1), 
             nn.ReLU(),
             nn.Flatten()
         )
         
-        # [자동 계산] CNN 출력 크기 계산 (stride 변경 시 에러 방지)
+        # CNN 출력 크기 계산
         with torch.no_grad():
             # (Batch=1, C, H, W) 더미 입력 생성
             dummy_input = torch.zeros(1, in_channels, 88, 88) 
             cnn_out = self.conv_layers(dummy_input)
             flatten_size = cnn_out.numel()
-            # print(f"DEBUG: CNN Output Flatten Size: {flatten_size}")
 
-        # 2. MLP Layers
-        self.fc1 = nn.Linear(flatten_size, 128) # 자동 계산된 크기 사용
+        # MLP Layers
+        self.fc1 = nn.Linear(flatten_size, 128)
         self.fc2 = nn.Linear(128, 128)
 
-        # 3. Heads
+        # heads
         self.policy_head = nn.Linear(128, num_outputs)
         self.value_head = nn.Linear(128, 1)
         

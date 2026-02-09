@@ -24,32 +24,33 @@ if __name__ == "__main__":
     env_name = "kaz_independent_DoubleDQN_Vector"
     register_env(env_name, lambda cfg: env_creator(cfg))
     
-    # 환경 스펙 확인
+    # [수정] 환경 스펙 확인 부분 변경
+    # FixedParallelPettingZooEnv 래퍼 내부의 'par_env'를 통해 접근해야 observation_spaces가 보입니다.
     tmp_env = env_creator({})
-    obs_space = tmp_env.observation_space
-    act_space = tmp_env.action_space
+    
+    # --- 변경된 부분 시작 ---
+    obs_space = tmp_env.par_env.observation_spaces["knight_0"] 
+    act_space = tmp_env.par_env.action_spaces["knight_0"]
+    # --- 변경된 부분 끝 ---
+    
     tmp_env.close()
 
-    # [중요] 기사 1명, 궁수 1명을 위한 정책 정의
-    # 두 에이전트 모두 '학습 가능한' 정책을 할당합니다.
+    # [중요] 기사 2명(Independent Learning)을 위한 정책 정의
     policies = {
-        "archer_0": (None, obs_space, act_space, {}),
         "knight_0": (None, obs_space, act_space, {}),
+        "knight_1": (None, obs_space, act_space, {}),
     }
 
     # [중요] Policy Mapping
-    # 에이전트 ID가 'archer_0'이면 'archer_0' 정책 사용
-    # 에이전트 ID가 'knight_0'이면 'knight_0' 정책 사용
     def policy_mapping_fn(agent_id, *args, **kwargs): 
         return agent_id
 
     current_dir = os.getcwd()
     local_log_dir = os.path.join(current_dir, "results")
-    experiment_name = "KAZ_Independent_DQN_MLP_VectorObs_noStack_knightRewardShaping"
+    experiment_name = "KAZ_Independent_DQN_MLP_VectorObs_2Knights"
 
     # [수정] 현재 시간을 "년-월-일_시-분-초" 형식으로 가져옴
     start_time = datetime.now().strftime("%m-%d_%H-%M-%S")
-    # GIF가 저장될 폴더명을 "gifs_날짜시간" 형태로 지정
     gif_save_path = os.path.join(local_log_dir, experiment_name, f"gifs_{start_time}")
 
     config = (
@@ -96,8 +97,8 @@ if __name__ == "__main__":
         .multi_agent(
             policies=policies,
             policy_mapping_fn=policy_mapping_fn,
-            # [중요] 궁수와 기사 모두 학습 대상에 포함
-            policies_to_train=["archer_0", "knight_0"],
+            # [중요] 기사 2명 모두 학습 대상에 포함
+            policies_to_train=["knight_0", "knight_1"],
         )
         .evaluation(
             evaluation_interval=100,
@@ -116,7 +117,6 @@ if __name__ == "__main__":
         local_dir=local_log_dir,
         
         # [변경] 학습 기준: 점수(Kill)가 가장 높은 모델 저장
-        # 필요시 "evaluation/custom_metrics/combined_score_mean" 사용 가능
         metric="evaluation/custom_metrics/score_mean",
         
         mode="max",

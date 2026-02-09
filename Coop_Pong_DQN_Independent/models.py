@@ -18,8 +18,7 @@ class CustomCNN(TorchModelV2, nn.Module):
         input_channels = shape[2] if len(shape) == 3 else 1
         input_h, input_w = shape[:2]
 
-        # --- CNN 레이어 정의 ---
-        # Nature DQN 스타일 CNN
+        # CNN 레이어
         self.conv_layers = nn.Sequential(
             nn.Conv2d(in_channels=input_channels, out_channels=32, kernel_size=8, stride=4),
             nn.ReLU(),
@@ -34,7 +33,7 @@ class CustomCNN(TorchModelV2, nn.Module):
         with torch.no_grad():
             self.flatten_dim = self.conv_layers(dummy_input).numel()
 
-        # --- Fully Connected 레이어 정의 ---
+        # fc 레이어
         self.fc_net = nn.Sequential(
             nn.Flatten(),
             nn.Linear(self.flatten_dim, fc_dim), 
@@ -44,25 +43,6 @@ class CustomCNN(TorchModelV2, nn.Module):
         self.policy_head = nn.Linear(fc_dim, num_outputs)
         self.value_head = nn.Linear(fc_dim, 1)
         self._value_out = None
-
-        # =================================================================
-        # [수정] 클래스 변수를 확인하여 처음 한 번만 출력
-        # =================================================================
-        if not CustomCNN._summary_printed:
-            total_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-            
-            print(f"\n{'='*40}")
-            print(f"[Model Info] {name}")
-            print(f"Observation Shape: {shape}")
-            print(f"Input Channels   : {input_channels}")
-            print(f"Flatten Dim      : {self.flatten_dim}")
-            print(f"FC Layer Dim     : {fc_dim}")  # 추가됨
-            print(f"Total Parameters : {total_params:,}") 
-            print(f"{'='*40}\n")
-            
-            # 출력 후 플래그를 True로 변경하여 다시 출력되지 않게 함
-            CustomCNN._summary_printed = True
-        # =================================================================
 
     def forward(self, input_dict, state, seq_lens):
         x = input_dict["obs"].float()

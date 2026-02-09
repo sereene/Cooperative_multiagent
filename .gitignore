@@ -2,6 +2,7 @@
 *state*
 *events.out*
 *.validate*
+*results*
 
 # 2. 'results'라는 이름의 폴더와 그 안의 모든 내용 제외
 results/
@@ -17,6 +18,7 @@ checkpoint/
 *.pkl
 *.csv
 *.txt
+videos/
 
 # .png 와 .gif 확장자를 가진 모든 파일 제외
 *.png

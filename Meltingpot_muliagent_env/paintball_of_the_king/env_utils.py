@@ -194,6 +194,10 @@ class MeltingPotRGBWrapper(BaseParallelWrapper):
             else:
                 new_obs[agent] = data
         return new_obs
+    
+    def render(self):
+        # 상위(Shimmy) 환경의 render 호출
+        return self.env.render()
 
 class ShimmyCompatibilityWrapper(BaseParallelWrapper):
     def __init__(self, env):
@@ -243,6 +247,10 @@ class ShimmyCompatibilityWrapper(BaseParallelWrapper):
             if agent not in full_actions:
                 full_actions[agent] = 0 
         return self.env.step(full_actions)
+    
+    def render(self):
+        # 상위(Shimmy) 환경의 render 호출
+        return self.env.render()
 
 class FixedParallelPettingZooEnv(ParallelPettingZooEnv):
     def __init__(self, env):
@@ -264,6 +272,10 @@ class FixedParallelPettingZooEnv(ParallelPettingZooEnv):
         terminations["__all__"] = any(terminations.values())
         truncations["__all__"] = any(truncations.values())
         return obs, rewards, terminations, truncations, infos
+    
+    def render(self):
+        # 상위(Shimmy) 환경의 render 호출
+        return self.env.render()
 
 def env_creator(config=None):
     if config is None: config = {}
@@ -278,7 +290,7 @@ def env_creator(config=None):
     env = MeltingPotRGBWrapper(env)
 
     # 3. 프레임 스택 (Box -> Box 12ch)
-    env = FrameStackWrapper(env, num_stack=4)
+    env = FrameStackWrapper(env, num_stack=3)
     
     # 4. 호환성 래퍼
     env = ShimmyCompatibilityWrapper(env)

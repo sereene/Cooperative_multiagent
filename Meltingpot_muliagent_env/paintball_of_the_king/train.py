@@ -60,10 +60,10 @@ if __name__ == "__main__":
     current_dir = os.getcwd()
     local_log_dir = os.path.join(current_dir, "results_selfplay")
     
-    # [복구] 타임스탬프가 포함된 GIF 저장 경로 생성
+    # [수정] GIF 저장 경로 설정 (폴더명 mp4s -> gifs로 변경하여 의미 명확화)
     start_time = datetime.now().strftime("%m-%d_%H-%M-%S")
-    mp4_save_path = os.path.join(local_log_dir, EXP_NAME, f"mp4s_{start_time}")
-    os.makedirs(mp4_save_path, exist_ok=True) # 경로 미리 생성
+    gif_save_path = os.path.join(local_log_dir, EXP_NAME, f"gifs_{start_time}")
+    os.makedirs(gif_save_path, exist_ok=True) 
 
     config = (
         PPOConfig()
@@ -97,9 +97,9 @@ if __name__ == "__main__":
             policy_mapping_fn=policy_mapping_fn,
             policies_to_train=["main_policy"],
         )
-        # [복구] GIF 저장 경로를 콜백에 전달
+        # [수정] 콜백에 GIF 저장 경로 전달
         .callbacks(lambda: SelfPlayCallback(
-            out_dir=mp4_save_path,
+            out_dir=gif_save_path,
             update_interval_iter=20,
             max_cycles=1000
         ))
@@ -108,7 +108,7 @@ if __name__ == "__main__":
     )
 
     print(f"### Starting Self-Play Training. Logs: {local_log_dir} ###")
-    print(f"### Local GIFs will be saved to: {mp4_save_path} ###")
+    print(f"### Local GIFs will be saved to: {gif_save_path} ###")
 
     tune.run(
         "PPO",

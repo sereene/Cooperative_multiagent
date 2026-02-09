@@ -4,10 +4,9 @@ import copy
 import numpy as np
 import torch
 import imageio.v2 as imageio
-import tempfile  # tempfile 모듈 추가
+import wandb 
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
 from env_utils import env_creator
-import wandb 
 
 class MeltingPotCallbacks(DefaultCallbacks):
     """기본 메트릭 집계 콜백"""
@@ -50,7 +49,115 @@ class MeltingPotCallbacks(DefaultCallbacks):
         episode.custom_metrics["occupation_rate_blue"] = episode.user_data["blue_occupation_steps"] / ep_len
 
 # -----------------------------------------------------------------------------
-# [핵심] Self-Play 및 Video Logging Callback
+# [수정됨] GIF 생성 함수 (안전한 Unpacking 적용)
+# -----------------------------------------------------------------------------
+def rollout_and_save_gif(
+    *,
+    algorithm,
+    out_path: str,
+    max_cycles: int = 1000,
+    every_n_steps: int = 4,   
+    max_frames: int = 300,    
+    fps: int = 30,
+    upload_to_wandb: bool = True,
+    wandb_key: str = "evaluation/gif",
+    step: int = 0
+):
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    
+    # Paintball 환경 생성
+    env = env_creator({"substrate": "paintball__king_of_the_hill"})
+    frames = []
+    
+    # LSTM 상태 관리
+    agent_states = {}
+
+    try:
+        obs, infos = env.reset()
+        step_i = 0
+        
+        # 첫 프레임 렌더링
+        try:
+            fr0 = env.par_env.render() 
+            if fr0 is not None: frames.append(fr0)
+        except Exception:
+            pass
+        
+        terminations = {a: False for a in env.par_env.possible_agents}
+        truncations = {a: False for a in env.par_env.possible_agents}
+
+        while True:
+            if not obs: break
+            actions = {}
+            for agent_id, agent_obs in obs.items():
+                policy_id = algorithm.config.policy_mapping_fn(agent_id)
+                
+                # 해당 에이전트의 상태가 없으면 초기화
+                if agent_id not in agent_states:
+                    policy = algorithm.get_policy(policy_id)
+                    agent_states[agent_id] = policy.get_initial_state()
+
+                # [핵심 수정] full_fetch=True를 사용하여 항상 튜플 반환을 강제함
+                result = algorithm.compute_single_action(
+                    agent_obs, 
+                    state=agent_states[agent_id], 
+                    policy_id=policy_id, 
+                    explore=False,
+                    full_fetch=True 
+                )
+                
+                # [안전 장치] 결과값 타입 체크 및 언패킹
+                if isinstance(result, tuple) and len(result) >= 3:
+                    action, state_out, _ = result
+                else:
+                    # 만약 튜플이 아닌 경우 (스칼라 액션만 반환된 경우 등)
+                    action = result
+                    state_out = agent_states[agent_id] # 상태 유지
+
+                actions[agent_id] = action
+                agent_states[agent_id] = state_out 
+
+            obs, rewards, terminations, truncations, infos = env.step(actions)
+
+            # 프레임 수집
+            if (step_i % every_n_steps) == 0:
+                if len(frames) >= max_frames: break
+                try:
+                    fr = env.par_env.render()
+                    if fr is not None: frames.append(fr)
+                except Exception:
+                    pass
+            
+            step_i += 1
+            if any(terminations.values()) or all(truncations.values()) or len(obs) == 0:
+                break
+            if step_i >= max_cycles:
+                break
+
+        if frames:
+            # GIF 저장
+            imageio.mimsave(out_path, frames, fps=fps, loop=0)
+            print(f"[GIF] Saved: {out_path}")
+            
+            # WandB 업로드
+            if upload_to_wandb and wandb.run is not None:
+                try:
+                    wandb.log({
+                        wandb_key: wandb.Video(out_path, fps=fps, format="gif", caption=f"Step {step}")
+                    }, step=step)
+                    print(f"[WandB] Uploaded GIF to {wandb_key}")
+                except Exception as e:
+                    print(f"[Warning] WandB upload failed: {e}")
+
+    finally:
+        try:
+            env.close()
+            gc.collect()
+        except Exception:
+            pass
+
+# -----------------------------------------------------------------------------
+# Self-Play 및 GIF Logging Callback
 # -----------------------------------------------------------------------------
 class SelfPlayCallback(MeltingPotCallbacks):
     def __init__(self, out_dir: str, update_interval_iter: int = 50, max_cycles: int = 1000):
@@ -59,9 +166,6 @@ class SelfPlayCallback(MeltingPotCallbacks):
         self.update_interval_iter = update_interval_iter
         self.max_cycles = max_cycles
         self.eval_count = 0
-        
-        # [설정] WandB 로깅 시 사용할 접두사 (gif_name 역할)
-        self.video_name = "test_rollout" 
         
         self.history_dir = os.path.join(self.out_dir, "policy_history")
         os.makedirs(self.history_dir, exist_ok=True)
@@ -82,6 +186,7 @@ class SelfPlayCallback(MeltingPotCallbacks):
             main_weights = self._get_pure_weights(algorithm, "main_policy")
             save_path = os.path.join(self.history_dir, f"weights_iter_{iteration}.pt")
             
+            # CPU로 이동하여 저장
             cpu_weights = {k: v.cpu() if isinstance(v, torch.Tensor) else v for k, v in main_weights.items()}
             torch.save(cpu_weights, save_path)
             
@@ -89,7 +194,10 @@ class SelfPlayCallback(MeltingPotCallbacks):
             if len(self.history_index) > 20:
                 old_iter, old_path = self.history_index.pop(0)
                 if os.path.exists(old_path):
-                    os.remove(old_path)
+                    try:
+                        os.remove(old_path)
+                    except OSError:
+                        pass
 
         # 2. [Self-Play] Opponent 업데이트
         if iteration > 0 and iteration % self.update_interval_iter == 0:
@@ -135,21 +243,19 @@ class SelfPlayCallback(MeltingPotCallbacks):
 
                 algorithm.set_weights({"opponent_policy": original_opponent_weights})
 
-        # 4. [Video 생성] - tempfile 버전 로직 적용
+        # 4. [GIF 생성]
         if iteration > 0 and iteration % self.update_interval_iter == 0:
             self.eval_count += 1
             if self.eval_count % 5 == 0:
-                print(f"🎬 Generating Video (Iter {iteration})...")
+                out_path = os.path.join(self.out_dir, f"eval_{self.eval_count:04d}_iter{iteration:06d}.gif")
+                print(f"🎬 Generating GIF at {out_path}...")
                 
-                # rollout_and_save_video 함수 호출
-                # target_dir 인자로 self.out_dir 전달
-                rollout_and_save_video(
+                rollout_and_save_gif(
                     algorithm=algorithm, 
-                    target_dir=self.out_dir, 
-                    max_cycles=self.max_cycles, 
-                    step=current_step, 
-                    epoch=iteration,
-                    video_name=self.video_name 
+                    out_path=out_path, 
+                    max_cycles=self.max_cycles,
+                    step=current_step,
+                    wandb_key="test_rollout/video"
                 )
 
         gc.collect()
@@ -176,11 +282,23 @@ class SelfPlayCallback(MeltingPotCallbacks):
                             policy = algorithm.get_policy(policy_id)
                             agent_states[agent_id] = policy.get_initial_state()
                         
-                        res = algorithm.compute_single_action(
-                            agent_obs, state=agent_states[agent_id], policy_id=policy_id, explore=True
+                        # [핵심 수정] 여기도 full_fetch=True 및 안전한 언패킹 적용
+                        result = algorithm.compute_single_action(
+                            agent_obs, 
+                            state=agent_states[agent_id], 
+                            policy_id=policy_id, 
+                            explore=True, # 대결 모드이므로 explore=True
+                            full_fetch=True 
                         )
-                        actions[agent_id] = res[0] if isinstance(res, tuple) else res
-                        agent_states[agent_id] = res[1] if isinstance(res, tuple) else agent_states[agent_id]
+                        
+                        if isinstance(result, tuple) and len(result) >= 3:
+                            action, state_out, _ = result
+                        else:
+                            action = result
+                            state_out = agent_states[agent_id]
+
+                        actions[agent_id] = action
+                        agent_states[agent_id] = state_out
                     
                     obs, rewards, terms, truncs, _ = env.step(actions)
                     
@@ -205,140 +323,3 @@ class SelfPlayCallback(MeltingPotCallbacks):
             del env
         
         return red_wins / num_matches, total_score_diff / num_matches
-
-# -----------------------------------------------------------------------------
-# [함수] Video Rollout 및 WandB 업로드 (tempfile 버전)
-# -----------------------------------------------------------------------------
-def rollout_and_save_video(algorithm, target_dir, max_cycles=1000, fps=30, step=None, epoch=None, video_name="test_rollout"):
-    if wandb is None or wandb.run is None:
-        return
-
-    # Create Environment
-    env = env_creator({"substrate": "paintball__king_of_the_hill"})
-    
-    frames = []
-    total_reward = 0.0
-    t = 0
-    agent_states = {}
-
-    try:
-        # 1. Start / Reset
-        try:
-            obs, info = env.reset()
-        except Exception as e:
-            print(f"[Video] start_failed: {repr(e)}")
-            return
-        
-        if not obs:
-            return
-
-        done = False
-        
-        # 2. Loop
-        while (not done) and (t < max_cycles):
-            # Render offscreen
-            try:
-                frame = env.par_env.render()
-                if frame is not None:
-                    frames.append(frame)
-            except Exception:
-                pass
-
-            # Compute Actions
-            actions = {}
-            try:
-                for agent_id, agent_obs in obs.items():
-                    policy_id = algorithm.config.policy_mapping_fn(agent_id)
-                    if agent_id not in agent_states:
-                        policy = algorithm.get_policy(policy_id)
-                        agent_states[agent_id] = policy.get_initial_state()
-                    
-                    res = algorithm.compute_single_action(
-                        agent_obs, state=agent_states[agent_id], policy_id=policy_id, explore=True
-                    )
-                    actions[agent_id] = res[0] if isinstance(res, tuple) else res
-                    agent_states[agent_id] = res[1] if isinstance(res, tuple) else agent_states[agent_id]
-            except Exception as e:
-                print(f"[Video] action_failed: {repr(e)}")
-                break
-
-            if not actions:
-                print("[Video] action_failed: actions is empty")
-                break
-
-            # Step
-            try:
-                obs, rewards, terms, truncs, info = env.step(actions)
-            except Exception as e:
-                print(f"[Video] step_failed: {repr(e)}")
-                break
-            
-            # Aggregate Reward
-            try:
-                if rewards:
-                    total_reward += sum(rewards.values())
-            except Exception:
-                pass
-
-            # Check Done
-            try:
-                if any(terms.values()) or all(truncs.values()) or not obs:
-                    done = True
-            except Exception:
-                done = False
-            
-            t += 1
-
-    finally:
-        env.close()
-        del env
-
-    if len(frames) < 2:
-        print(f"[Video] Rollout too short: frames={len(frames)}")
-        return
-
-    # 3. Write MP4 using tempfile (as requested)
-    # 디렉토리가 없으면 생성
-    try:
-        os.makedirs(target_dir, exist_ok=True)
-        log_dir = target_dir
-    except Exception:
-        log_dir = "."
-
-    # tempfile 생성 (delete=False로 설정하여 파일 유지)
-    with tempfile.NamedTemporaryFile(suffix=".mp4", dir=log_dir, delete=False) as f:
-        video_path = f.name
-
-    # Save using imageio (mimsave)
-    try:
-        # macro_block_size=None ensures better compatibility for odd dimensions
-        imageio.mimsave(video_path, frames, fps=fps, macro_block_size=None)
-        print(f"[Video] Saved to local disk (temp): {video_path}")
-    except Exception as e:
-        try:
-            if os.path.exists(video_path):
-                os.remove(video_path)
-        except Exception:
-            pass
-        print(f"[Video] write_failed(imageio): {repr(e)}")
-        return
-
-    # 4. Upload to WandB
-    # 요청하신 코드의 dict 키 형식 그대로 적용
-    try:
-        wandb.log(
-            {
-                f"{video_name}/video": wandb.Video(video_path, fps=fps, format="mp4", caption=f"Epoch {epoch}"),
-                f"{video_name}/total_reward": float(total_reward),
-                f"{video_name}/length": int(t),
-                f"{video_name}/epoch": int(epoch),
-            },
-            step=int(step) if step is not None else None,
-        )
-        print(f"[WandB] 🟢 Uploaded Video to '{video_name}/video' at step {step}")
-    except Exception as e:
-        print(f"[Video] wandb_log_failed: {repr(e)}")
-
-    # Cleanup memory
-    del frames
-    gc.collect()

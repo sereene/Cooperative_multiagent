@@ -3,8 +3,9 @@ import gc
 import numpy as np
 import imageio.v2 as imageio
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
-import supersuit as ss
-from pettingzoo.butterfly import knights_archers_zombies_v10
+# 수동 생성에 필요한 라이브러리 제거
+# import supersuit as ss 
+# from pettingzoo.butterfly import knights_archers_zombies_v10
 
 from RewardShapingWrapper import RewardShapingWrapper
 from env_utils import FixedParallelPettingZooEnv, env_creator, MAX_CYCLES
@@ -22,7 +23,6 @@ class CoopPongCallbacks(DefaultCallbacks):
         episode.custom_metrics["score"] = total_score
         
         # 3. 종합 점수 (선택 사항: 점수 + 생존 보너스)
-        # 생존 시 100점의 가치를 둠
         combined_score = total_score + (success * 100.0)
         episode.custom_metrics["combined_score"] = combined_score
 
@@ -37,34 +37,33 @@ def rollout_and_save_gif(
 ):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
-    # [중요] 평가용 환경도 학습 환경과 똑같이 설정 (1 archer, 1 knight, spawn 50)
-    env = knights_archers_zombies_v10.parallel_env(
-        spawn_rate=50, 
-        num_archers=1, 
-        num_knights=1,
-        max_arrows=1,
-        max_cycles=max_cycles, 
-        vector_state=True,
-        render_mode="rgb_array"
-    )
-    # env = ss.frame_stack_v1(env, 4)
-
-    env = RewardShapingWrapper(env)
-    
-    env = FixedParallelPettingZooEnv(env)
+    # [수정] 수동 환경 생성 코드를 제거하고 env_creator를 사용하여 일관성 보장
+    # 이렇게 하면 env_utils.py에서 설정한 FrameStack이나 에이전트 수(기사 2명 등)가 자동으로 반영됩니다.
+    env = env_creator({})
     
     frames = []
     try:
+        # env_creator가 반환하는 env는 FixedParallelPettingZooEnv(RLLib Wrapper)입니다.
         obs, infos = env.reset()
         step_i = 0
         
-        fr0 = env.render()
+        # RLLib Wrapper는 render()를 직접 노출하지 않을 수 있으므로 par_env를 통해 호출
+        # (env_utils의 FixedParallelPettingZooEnv 구조에 따라 접근)
+        if hasattr(env, "par_env") and hasattr(env.par_env, "render"):
+             fr0 = env.par_env.render()
+        elif hasattr(env, "render"):
+             fr0 = env.render()
+        else:
+             fr0 = None
+        
         if fr0 is not None: frames.append(fr0)
 
-        # FixedParallelPettingZooEnv는 RLLib 래퍼라서 직접 속성이 없으므로,
-        # 내부의 par_env(PettingZoo 환경)를 통해 접근해야 합니다.
-        terminations = {a: False for a in env.par_env.possible_agents}
-        truncations = {a: False for a in env.par_env.possible_agents}
+        # Termination 확인을 위한 에이전트 목록 가져오기
+        base_env = env.par_env if hasattr(env, "par_env") else env
+        possible_agents = base_env.possible_agents if hasattr(base_env, "possible_agents") else obs.keys()
+
+        terminations = {a: False for a in possible_agents}
+        truncations = {a: False for a in possible_agents}
 
         while True:
             if not obs: break
@@ -72,6 +71,8 @@ def rollout_and_save_gif(
             actions = {}
             for agent_id, agent_obs in obs.items():
                 # 각 에이전트의 정책으로 행동 결정
+                # 정책 ID 매핑이 복잡한 경우 algorithm.compute_single_action 호출 시 policy_id 지정 필요
+                # 여기서는 agent_id와 policy_id가 동일하다고 가정 (policy_mapping_fn 참조)
                 action = algorithm.compute_single_action(
                     agent_obs, 
                     policy_id=agent_id, 
@@ -83,12 +84,20 @@ def rollout_and_save_gif(
 
             if (step_i % every_n_steps) == 0:
                 if len(frames) >= max_frames: break
-                fr = env.render()
+                
+                if hasattr(env, "par_env") and hasattr(env.par_env, "render"):
+                    fr = env.par_env.render()
+                elif hasattr(env, "render"):
+                    fr = env.render()
+                else:
+                    fr = None
+                    
                 if fr is not None: frames.append(fr)
 
             step_i += 1
             
-            if any(terminations.values()) or all(truncations.values()) or len(obs) == 0:
+            # RLLib wrapper는 "__all__" 키를 포함합니다.
+            if terminations.get("__all__", False) or truncations.get("__all__", False) or len(obs) == 0:
                 break
 
         if frames:
@@ -116,6 +125,7 @@ class GifCallbacks(CoopPongCallbacks):
 
     def on_train_result(self, *, algorithm, result, **kwargs):
         training_iter = int(result.get("training_iteration", 0))
+        # evaluation 결과가 없으면 건너뜀 (train_batch_size 등에 따라 매번 evaluation이 안 돌 수도 있음)
         if "evaluation" not in result: return
 
         self.eval_count += 1

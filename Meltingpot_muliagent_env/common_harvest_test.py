@@ -99,27 +99,6 @@ def main():
             # --- 환경 진행 단계 ---
             observations, rewards, terminations, truncations, infos = env.step(actions)
 
-            # --- 렌더링 단계 (OpenCV로 확대해서 보기) ---
-            # Shimmy의 기본 env.render()는 화면이 너무 작을 수 있어 OpenCV를 사용합니다.
-            # # agent_0의 시야를 가져와서 전체 맵(WORLD.RGB)이 있으면 그걸 보여줍니다.
-            # if 'player_0' in observations:
-            #     # WORLD.RGB가 있으면 사용, 없으면 개인 시야(RGB) 사용
-            #     if 'WORLD.RGB' in observations['player_0']:
-            #         rgb_img = observations['player_0']['WORLD.RGB']
-            #     else:
-            #         rgb_img = observations['player_0']['RGB']
-                
-            #     # RGB -> BGR 변환 (OpenCV용)
-            #     bgr_img = cv2.cvtColor(rgb_img, cv2.COLOR_RGB2BGR)
-                
-            #     # 확대
-            #     h, w, _ = bgr_img.shape
-            #     bgr_large = cv2.resize(bgr_img, (w * SCALE_FACTOR, h * SCALE_FACTOR), interpolation=cv2.INTER_NEAREST)
-                
-            #     cv2.imshow("Melting Pot Simulation", bgr_large)
-            #     if cv2.waitKey(int(1000 / FPS)) & 0xFF == ord('q'):
-            #         print("사용자 종료 (q)")
-            #         break
             
             # --- 종료 조건 확인 ---
             if not env.agents: # 모든 에이전트 종료 시
