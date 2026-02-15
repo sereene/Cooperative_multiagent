@@ -26,7 +26,7 @@ if __name__ == "__main__":
 
     # Argument Parser 설정
     parser = argparse.ArgumentParser()
-    parser.add_argument("--fc_size", type=int, default=128, help="FC layer hidden size")
+    parser.add_argument("--fc_size", type=int, default=512, help="FC layer hidden size")
     args = parser.parse_args()
 
     env_name = "cooperative_pong_independent_DoubleDQN"
@@ -50,7 +50,7 @@ if __name__ == "__main__":
 
     current_dir = os.getcwd()
     local_log_dir = os.path.join(current_dir, "results")
-    experiment_name = f"DoubleDQN_CoopPong_Independent_CNN_RewardShaping_customstack4_fc{args.fc_size}"
+    experiment_name = f"DoubleDQN_CoopPong_Independent_CNN_noRewardShaping_customstack3_fc{args.fc_size}"
 
     config = (
         DQNConfig()
@@ -59,7 +59,7 @@ if __name__ == "__main__":
         .environment(env=env_name, clip_actions=True, disable_env_checking=True)
         .framework("torch")
         .rollouts(
-            num_rollout_workers=8,
+            num_rollout_workers=10,
             rollout_fragment_length=16, 
             compress_observations=False  #stack 문제 원인 후보
         )
@@ -94,15 +94,15 @@ if __name__ == "__main__":
             #     [10_000_000, 5e-7], # 끝날 때는 아주 낮게
             # ],
 
-            lr=2e-5,  
-            gamma=0.99,
+            lr=1e-4,  
+            gamma=0.95,
         )
         .exploration(
             exploration_config={
                 "type": "EpsilonGreedy",
                 "initial_epsilon": 1.0,
                 "final_epsilon": 0.01,       
-                "epsilon_timesteps": 8_000_000, 
+                "epsilon_timesteps": 10_000_000, 
             }
         )
         .callbacks(lambda: GifCallbacks(out_dir=os.path.join(local_log_dir, experiment_name, "gifs")))
@@ -125,7 +125,7 @@ if __name__ == "__main__":
     tune.run(
         "DQN",
         name=experiment_name,
-        stop={"timesteps_total": 16_000_000},
+        stop={"timesteps_total": 25_000_000},
         local_dir=local_log_dir,
         metric="evaluation/custom_metrics/success_mean",
         mode="max",

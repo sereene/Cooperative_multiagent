@@ -12,7 +12,7 @@ class CustomCNN(TorchModelV2, nn.Module):
         nn.Module.__init__(self)
 
         custom_config = model_config.get("custom_model_config", {})
-        fc_dim = custom_config.get("fc_size", 256)
+        fc_dim = custom_config.get("fc_size", 512)
 
         shape = obs_space.shape
         input_channels = shape[2] if len(shape) == 3 else 1

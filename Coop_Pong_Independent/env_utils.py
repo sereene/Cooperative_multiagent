@@ -4,35 +4,40 @@ from ray.rllib.env.multi_agent_env import MultiAgentEnv
 import numpy as np
 from gymnasium import spaces
 
-# 사용자가 만든 Wrapper Import
+# 사용자가 만든 Wrapper Import (사용하지 않더라도 에러 방지를 위해 남겨둠)
 from RewardShapingWrapper import RewardShapingWrapper
 from FrameStackWrapper import FrameStackWrapper
 
-MAX_CYCLES = 500
+MAX_CYCLES = 900
 
 class FixedParallelPettingZooEnv(MultiAgentEnv):
     """
     [Final Fix]
-    Observation Space를 동적으로 가져오는 대신, 
-    우리가 목표로 하는 (84, 168, 4) 형태로 강제 고정(Hard-coding)합니다.
-    이렇게 하면 중간 Wrapper들이 정보를 제대로 전달하지 못해도 RLLib은 3D로 인식합니다.
+    Observation Space를 (84, 168, 1)로 정의했으므로,
+    실제 step()과 reset()에서 들어오는 (84, 168) 데이터를 (84, 168, 1)로 변환해서 반환해야 합니다.
     """
     def __init__(self, pettingzoo_env):
         super().__init__()
         self.env = pettingzoo_env
         self._agent_ids = set(self.env.possible_agents)
         
-        # [핵심 수정] 환경에 물어보지 않고, 우리가 아는 정답(84, 168, 4)을 강제로 박아넣습니다.
-        # 이렇게 하면 "outside given space (84, 168)" 오류가 발생할 수 없습니다.
+        sample_agent = self.env.possible_agents[0]
+        original_obs_space = self.env.observation_space(sample_agent)
+        
+        # 1. 공간 정의 (Shape definition)
+        if len(original_obs_space.shape) == 3:
+            final_shape = original_obs_space.shape
+        else:
+            # 2D 데이터(84, 168)라면 (84, 168, 1)로 정의
+            final_shape = original_obs_space.shape + (1,)
+
         self.observation_space = spaces.Box(
             low=0, 
             high=255, 
-            shape=(84, 168, 4), 
+            shape=final_shape, 
             dtype=np.uint8
         )
         
-        # Action Space는 그대로 가져옵니다.
-        sample_agent = self.env.possible_agents[0]
         self.action_space = self.env.action_space(sample_agent)
 
         # 게임 객체 확보
@@ -49,17 +54,30 @@ class FixedParallelPettingZooEnv(MultiAgentEnv):
             self.screen_width = 480.0
             self.screen_height = 280.0
 
+    def _process_obs(self, obs_dict):
+        """
+        관측 데이터가 2차원(H, W)인 경우 (H, W, 1)로 차원을 확장합니다.
+        """
+        for agent_id, obs in obs_dict.items():
+            # numpy 배열이고 2차원이라면 차원 추가
+            if isinstance(obs, np.ndarray) and obs.ndim == 2:
+                obs_dict[agent_id] = np.expand_dims(obs, axis=-1)
+        return obs_dict
+
     @property
     def possible_agents(self):
         return self.env.possible_agents
 
     def reset(self, *, seed=None, options=None):
-        return self.env.reset(seed=seed, options=options)
+        obs, infos = self.env.reset(seed=seed, options=options)
+        # [수정] 데이터 차원 보정 후 반환
+        return self._process_obs(obs), infos
 
     def step(self, action_dict):
         obs, rewards, terms, truncs, infos = self.env.step(action_dict)
         
-        # Reward Shaping은 Wrapper에서 처리되므로 여기서는 패스
+        # [수정] 데이터 차원 보정
+        obs = self._process_obs(obs)
         
         terms["__all__"] = any(terms.values())
         truncs["__all__"] = any(truncs.values())
@@ -71,7 +89,6 @@ class FixedParallelPettingZooEnv(MultiAgentEnv):
     def close(self):
         return self.env.close()
 
-
 def env_creator(config=None):
     # 1. PettingZoo 환경 생성
     env = cooperative_pong_v5.parallel_env(max_cycles=MAX_CYCLES, render_mode="rgb_array")
@@ -81,10 +98,10 @@ def env_creator(config=None):
     env = ss.color_reduction_v0(env, mode="full")
     
     # 3. Reward Shaping
-    env = RewardShapingWrapper(env)
+    # env = RewardShapingWrapper(env)
 
-    # 4. Frame Stacking
-    env = FrameStackWrapper(env, num_stack=4)
+    # 4. Frame Stacking (여기서 3을 썼으므로 3채널이 됩니다)
+    # env = FrameStackWrapper(env, num_stack=3)
 
     # 5. RLLib 포장
     return FixedParallelPettingZooEnv(env)
