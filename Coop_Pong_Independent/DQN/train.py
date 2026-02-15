@@ -14,7 +14,7 @@ import numpy as np
 # 분리한 모듈들 import
 from models import CustomCNN
 from env_utils import FixedParallelPettingZooEnv, env_creator
-from callbacks import GifCallbacks
+from DQN.callbacks import GifCallbacks
 
 # 경고 무시 및 환경변수 설정
 warnings.filterwarnings("ignore", category=DeprecationWarning)
