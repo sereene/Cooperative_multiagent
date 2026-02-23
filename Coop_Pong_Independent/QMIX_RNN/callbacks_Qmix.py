@@ -6,7 +6,6 @@ from datetime import datetime
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
 import wandb
 
-# 환경 생성 함수를 가져옵니다.
 from env_utils import env_creator, MAX_CYCLES
 
 class CoopPongCallbacks(DefaultCallbacks):
@@ -33,7 +32,6 @@ def rollout_and_save_gif(
         obs, infos = env.reset()
         step_i = 0
 
-        # [중요] RNN 초기 상태를 가져옵니다.
         rnn_state = algorithm.get_policy("group_1").get_initial_state()
 
         fr0 = env.render()
@@ -50,7 +48,6 @@ def rollout_and_save_gif(
             if "paddle_0" in obs and "paddle_1" in obs:
                 grouped_obs = (obs["paddle_0"], obs["paddle_1"])
                 
-                # [수정] 액션 계산 시 rnn_state를 전달하고, 새로 업데이트된 state를 받습니다.
                 group_action, rnn_state, _ = algorithm.compute_single_action(
                     grouped_obs, 
                     state=rnn_state,  # 이전 상태 전달
