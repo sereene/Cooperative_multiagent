@@ -12,7 +12,6 @@ class CustomCNNGRU(RecurrentNetwork, nn.Module):
         custom_config = model_config.get("custom_model_config", {})
         self.hidden_dim = custom_config.get("fc_size", 128)
 
-        # 관측 공간의 원본 형태 저장
         self.obs_shape = obs_space.shape
         
         # 입력 채널 및 크기 계산
@@ -76,27 +75,21 @@ class CustomCNNGRU(RecurrentNetwork, nn.Module):
         x = torch.relu(self.fc1(x)) 
 
         # 3. RNN Processing
-        # seq_lens가 텐서로 들어올 때를 대비한 안전한 조건문
         if seq_lens is not None and len(seq_lens) > 0:
-            # 텐서인 경우 shape[0]으로, 리스트인 경우 len()으로 배치 사이즈 추출
             batch_size = seq_lens.shape[0] if isinstance(seq_lens, torch.Tensor) else len(seq_lens)
             max_seq_len = x.shape[0] // batch_size
             
-            # [수정됨] reshape -> view 변경: 메모리상의 시계열 순서가 정확한지 강제 검증
             rnn_input = x.view(batch_size, max_seq_len, self.hidden_dim)
             
-            # GRU의 초기 상태 차원 맞추기: (num_layers, batch_size, hidden_dim)
             h_0 = state[0].unsqueeze(0).contiguous()
             
             self.gru.flatten_parameters()
             rnn_output, h_n = self.gru(rnn_input, h_0)
             
-            # 다시 RLlib이 기대하는 1차원 배치(B*T) 형태로 복구
             rnn_output = rnn_output.view(-1, self.hidden_dim)
             new_state = [h_n.squeeze(0)]
             
         else:
-            # Inference(평가) 환경 등에서 seq_lens가 없을 때의 단일 스텝 처리
             rnn_input = x.unsqueeze(1)
             h_0 = state[0].unsqueeze(0).contiguous()
             
