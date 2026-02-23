@@ -11,7 +11,6 @@ from ray.air.integrations.wandb import WandbLoggerCallback
 import gymnasium as gym
 import numpy as np
 
-# 분리한 모듈들 import
 from models_CNNGRU import CustomCNNGRU
 from env_utils import FixedParallelPettingZooEnv, env_creator
 from callbacks_Qmix import GifCallbacks
@@ -27,10 +26,10 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     # 논문 하이퍼파라미터: Hidden Dimension = 64
-    parser.add_argument("--fc_size", type=int, default=128, help="Hidden dimension size (paper: 64)")
+    parser.add_argument("--fc_size", type=int, default=128, help="Hidden dimension size")
     args = parser.parse_args()
 
-    # [중요] QMIX 그룹 정의
+    # QMIX 그룹 정의
     grouping = {
         "group_1": ["paddle_0", "paddle_1"],
     }
@@ -48,17 +47,13 @@ if __name__ == "__main__":
     env_name = "cooperative_pong_qmix"
     register_env(env_name, grouped_env_creator)
     
-    # --------------------------------------------------------------------------
-    # [수정됨] 그룹화된 공간(Tuple)을 수동으로 생성합니다.
-    # --------------------------------------------------------------------------
-    # 1. 기본 환경을 생성하여 단일 에이전트의 공간을 가져옵니다.
+    # 1. 기본 환경을 생성하여 단일 에이전트의 공간 가져옴
     base_env = env_creator({})
     single_obs_space = base_env.observation_space
     single_act_space = base_env.action_space
     base_env.close()
 
-    # 2. 그룹은 2명의 에이전트("paddle_0", "paddle_1")로 구성되므로
-    #    관측/행동 공간도 2개짜리 Tuple로 만들어줍니다.
+    # 2. 그룹은 2명의 에이전트("paddle_0", "paddle_1")로 구성
     group_obs_space = gym.spaces.Tuple([single_obs_space, single_obs_space])
     group_act_space = gym.spaces.Tuple([single_act_space, single_act_space])
     # --------------------------------------------------------------------------
@@ -72,14 +67,13 @@ if __name__ == "__main__":
         .rl_module(_enable_rl_module_api=False)
         .environment(
             env=env_name,
-            disable_env_checking=True # Wrapper 구조 오인식 방지
+            disable_env_checking=True 
         )
         .framework("torch")
         .rollouts(
             num_rollout_workers=6, 
             rollout_fragment_length=20, 
         )
-        # [핵심] Multi-Agent 정책에 위에서 만든 Tuple 공간을 명시합니다.
         .multi_agent(
             policies={
                 "group_1": (None, group_obs_space, group_act_space, {})
@@ -107,7 +101,7 @@ if __name__ == "__main__":
             
             replay_buffer_config={
                 "type": "MultiAgentReplayBuffer",
-                "capacity": 100000, # MARL 환경이므로 버퍼 크기를 조금 넉넉히 늘립니다.
+                "capacity": 100000, 
             },
             
             lr=1e-4,  
@@ -123,10 +117,10 @@ if __name__ == "__main__":
         )
         .evaluation(
             evaluation_interval=10,          # 10 Iteration마다 평가 실행
-            evaluation_duration=20,          # 평가 시 5 에피소드 진행
+            evaluation_duration=20,          
             evaluation_duration_unit="episodes",
             evaluation_config={
-                "explore": False,           # 평가 시에는 Greedy하게 행동
+                "explore": False,           # 평가는 Greedy하게
             },
         )
         .callbacks(lambda: GifCallbacks(out_dir=os.path.join(local_log_dir, experiment_name, "gifs")))
