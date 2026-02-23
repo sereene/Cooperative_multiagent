@@ -114,7 +114,7 @@ if __name__ == "__main__":
         )
         .evaluation(
             evaluation_interval=50,
-            evaluation_num_episodes=10, 
+            evaluation_num_episodes=50, 
             evaluation_config={"explore": False},
         )
         .resources(num_gpus=1 if torch.cuda.is_available() else 0)

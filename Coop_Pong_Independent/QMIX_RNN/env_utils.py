@@ -3,6 +3,7 @@ from pettingzoo.butterfly import cooperative_pong_v5
 from ray.rllib.env.multi_agent_env import MultiAgentEnv
 import numpy as np
 from gymnasium import spaces
+from FrameStackWrapper import FrameStackWrapper
 
 
 MAX_CYCLES = 900
@@ -54,11 +55,22 @@ class FixedParallelPettingZooEnv(MultiAgentEnv):
     def _process_obs(self, obs_dict):
         """
         관측 데이터가 2차원(H, W)인 경우 (H, W, 1)로 차원을 확장합니다.
+        SuperSuit 래퍼가 실제 데이터 변환을 누락해 (H, W, 3)의 RGB 데이터가 
+        들어올 경우를 대비해 강제로 Grayscale(H, W, 1)로 변환합니다.
         """
         for agent_id, obs in obs_dict.items():
-            # numpy 배열이고 2차원이라면 차원 추가
-            if isinstance(obs, np.ndarray) and obs.ndim == 2:
-                obs_dict[agent_id] = np.expand_dims(obs, axis=-1)
+            if isinstance(obs, np.ndarray):
+                # 1. 2차원 흑백 데이터 (84, 84)가 정상적으로 들어온 경우 -> (84, 84, 1)
+                if obs.ndim == 2:
+                    obs_dict[agent_id] = np.expand_dims(obs, axis=-1)
+                
+                # 2. 3차원 RGB 데이터 (84, 84, 3)가 그대로 들어온 경우 강제 변환
+                elif obs.ndim == 3 and obs.shape[-1] == 3:
+                    # RGB를 Grayscale로 변환 (표준 휘도 공식 적용)
+                    gray = np.dot(obs[..., :3], [0.2989, 0.5870, 0.1140])
+                    # (84, 84) 형태의 배열을 (84, 84, 1)로 확장하고 uint8로 캐스팅
+                    obs_dict[agent_id] = np.expand_dims(gray.astype(np.uint8), axis=-1)
+                    
         return obs_dict
 
     @property
@@ -91,7 +103,7 @@ def env_creator(config=None):
     env = cooperative_pong_v5.parallel_env(max_cycles=MAX_CYCLES, render_mode="rgb_array")
 
     # 2. SuperSuit Wrappers
-    env = ss.resize_v1(env, x_size=168, y_size=84)
+    env = ss.resize_v1(env, x_size=84, y_size=84)
     env = ss.color_reduction_v0(env, mode="full")
     
     # 3. Reward Shaping

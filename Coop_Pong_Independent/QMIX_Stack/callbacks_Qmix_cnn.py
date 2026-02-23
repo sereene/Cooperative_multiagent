@@ -6,6 +6,7 @@ from datetime import datetime
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
 import wandb
 
+# 환경 생성 함수를 가져옵니다.
 from env_utils import env_creator, MAX_CYCLES
 
 class CoopPongCallbacks(DefaultCallbacks):
@@ -32,9 +33,6 @@ def rollout_and_save_gif(
         obs, infos = env.reset()
         step_i = 0
 
-        # [수정] RNN 초기 상태 가져오기 제거 (CNN은 상태가 필요 없음)
-        # rnn_state = ... (삭제됨)
-
         fr0 = env.render()
         if fr0 is not None: frames.append(fr0)
 
@@ -49,17 +47,37 @@ def rollout_and_save_gif(
             if "paddle_0" in obs and "paddle_1" in obs:
                 grouped_obs = (obs["paddle_0"], obs["paddle_1"])
                 
-                # [수정] RNN State 제거
-                # compute_single_action에 state=[]를 전달 (Stateless 모델)
-                group_action, _, _ = algorithm.compute_single_action(
+                # [수정] compute_single_action 반환값 처리 강화
+                # 반환값이 (action, state, info) 튜플일 수도 있고, action만 반환될 수도 있습니다.
+                result = algorithm.compute_single_action(
                     grouped_obs, 
-                    state=[],        # 빈 리스트 전달
+                    state=[],        # 빈 리스트 전달 (Stateless)
                     policy_id="group_1", 
                     explore=False
                 )
                 
-                actions["paddle_0"] = group_action[0]
-                actions["paddle_1"] = group_action[1]
+                # 반환값 구조 분해 (안전하게 처리)
+                if isinstance(result, tuple) and len(result) >= 1:
+                    group_action = result[0] # 첫 번째 요소가 action
+                else:
+                    group_action = result
+
+                # group_action이 튜플/리스트인지 스칼라인지 확인 후 할당
+                if isinstance(group_action, (list, tuple, np.ndarray)) and len(np.shape(group_action)) > 0:
+                     # 배열 형태인 경우 (정상 케이스)
+                    actions["paddle_0"] = group_action[0]
+                    actions["paddle_1"] = group_action[1]
+                else:
+                    # [예외 처리] 만약 스칼라 값이 반환된다면 (단일 값인 경우)
+                    # QMIX 그룹이지만 단일 값으로 나왔을 때를 대비해 로그 출력 후 처리
+                    # 보통 이런 경우 에러가 발생할 수 있으므로 확인용 print 추가
+                    # print(f"[DEBUG] group_action is scalar: {group_action}, type: {type(group_action)}")
+                    # 비상용: 동일 액션 적용 혹은 0번 인덱스로 간주 (상황에 따라 다름)
+                    try:
+                        actions["paddle_0"] = group_action
+                        actions["paddle_1"] = group_action # 혹은 다른 기본값
+                    except Exception:
+                        pass # 무시하거나 로그
 
             obs, rewards, terminations, truncations, infos = env.step(actions)
 

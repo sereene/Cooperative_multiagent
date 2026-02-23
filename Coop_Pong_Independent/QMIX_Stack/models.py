@@ -14,9 +14,16 @@ class CustomCNN(TorchModelV2, nn.Module):
         custom_config = model_config.get("custom_model_config", {})
         fc_dim = custom_config.get("fc_size", 512)
 
-        shape = obs_space.shape
-        input_channels = shape[2] if len(shape) == 3 else 1
-        input_h, input_w = shape[:2]
+        # 관측 공간의 원본 형태 저장 (복원을 위해 필수)
+        self.obs_shape = obs_space.shape
+        
+        # 입력 채널 및 크기 계산
+        if len(self.obs_shape) == 3:
+            input_h, input_w, input_channels = self.obs_shape
+        else:
+            # (H, W)인 경우
+            input_h, input_w = self.obs_shape
+            input_channels = 1
 
         # CNN 레이어
         self.conv_layers = nn.Sequential(
@@ -48,7 +55,19 @@ class CustomCNN(TorchModelV2, nn.Module):
         x = input_dict["obs"].float()
         x = x / 255.0 
 
-        if x.dim() == 3: x = x.unsqueeze(-1)
+        # [FIX] 입력이 평탄화되어(2D) 들어올 경우, 이미지 형태로 복원
+        # x.shape 예시: [Batch, 14112] -> [Batch, 84, 168, 1]
+        if x.dim() == 2:
+            if len(self.obs_shape) == 3:
+                x = x.reshape(x.size(0), self.obs_shape[0], self.obs_shape[1], self.obs_shape[2])
+            else:
+                x = x.reshape(x.size(0), self.obs_shape[0], self.obs_shape[1], 1)
+
+        # [FIX] (Batch, H, W)인 경우 -> (Batch, H, W, 1)로 차원 확장
+        if x.dim() == 3: 
+            x = x.unsqueeze(-1)
+            
+        # [Batch, H, W, C] -> [Batch, C, H, W]
         x = x.permute(0, 3, 1, 2)
 
         x = self.fc_net(self.conv_layers(x))

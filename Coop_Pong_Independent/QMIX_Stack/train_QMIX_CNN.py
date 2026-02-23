@@ -14,7 +14,7 @@ import numpy as np
 # [수정] CNN 모델 import (models.py 사용)
 from models import CustomCNN
 from env_utils import FixedParallelPettingZooEnv, env_creator
-from QMIX_RNN.callbacks_Qmix import GifCallbacks
+from callbacks_Qmix_cnn import GifCallbacks
 
 # 경고 무시 및 환경변수 설정
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -27,7 +27,7 @@ if __name__ == "__main__":
     ModelCatalog.register_custom_model("custom_cnn", CustomCNN)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--fc_size", type=int, default=64, help="Hidden dimension size")
+    parser.add_argument("--fc_size", type=int, default=512, help="Hidden dimension size")
     args = parser.parse_args()
 
     # QMIX 그룹 정의
@@ -64,7 +64,6 @@ if __name__ == "__main__":
     config = (
         QMixConfig()
         .rl_module(_enable_rl_module_api=False)
-        .training(_enable_learner_api=False)
         .environment(
             env=env_name,
             disable_env_checking=True
@@ -81,6 +80,7 @@ if __name__ == "__main__":
             policy_mapping_fn=lambda agent_id, *args, **kwargs: "group_1"
         )
         .training(
+            _enable_learner_api=False,
             mixer="qmix", 
             mixing_embed_dim=32,
             double_q=True, 
@@ -116,7 +116,7 @@ if __name__ == "__main__":
                 "type": "EpsilonGreedy",
                 "initial_epsilon": 1.0,
                 "final_epsilon": 0.05,       
-                "epsilon_timesteps": 10_000_000, 
+                "epsilon_timesteps": 7_000_000, 
             }
         )
         .callbacks(lambda: GifCallbacks(out_dir=os.path.join(local_log_dir, experiment_name, "gifs")))
@@ -128,7 +128,7 @@ if __name__ == "__main__":
     tune.run(
         "QMIX",
         name=experiment_name,
-        stop={"timesteps_total": 20_000_000},
+        stop={"timesteps_total": 15_000_000},
         local_dir=local_log_dir,
         metric="evaluation/custom_metrics/success_mean",
         mode="max",

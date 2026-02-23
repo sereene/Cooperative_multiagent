@@ -27,7 +27,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     # 논문 하이퍼파라미터: Hidden Dimension = 64
-    parser.add_argument("--fc_size", type=int, default=64, help="Hidden dimension size (paper: 64)")
+    parser.add_argument("--fc_size", type=int, default=128, help="Hidden dimension size (paper: 64)")
     args = parser.parse_args()
 
     # [중요] QMIX 그룹 정의
@@ -65,20 +65,19 @@ if __name__ == "__main__":
 
     current_dir = os.getcwd()
     local_log_dir = os.path.join(current_dir, "results")
-    experiment_name = f"QMIX_CoopPong_RNN_hidden{args.fc_size}_5e-5"
+    experiment_name = f"QMIX_CoopPong_RNN_hidden{args.fc_size}_1e-4_VDN"
 
     config = (
         QMixConfig()
         .rl_module(_enable_rl_module_api=False)
-        .training(_enable_learner_api=False)
         .environment(
             env=env_name,
             disable_env_checking=True # Wrapper 구조 오인식 방지
         )
         .framework("torch")
         .rollouts(
-            num_rollout_workers=8, 
-            rollout_fragment_length=4, 
+            num_rollout_workers=6, 
+            rollout_fragment_length=20, 
         )
         # [핵심] Multi-Agent 정책에 위에서 만든 Tuple 공간을 명시합니다.
         .multi_agent(
@@ -88,63 +87,47 @@ if __name__ == "__main__":
             policy_mapping_fn=lambda agent_id, *args, **kwargs: "group_1"
         )
         .training(
-            # --- QMIX Specifics ---
-            mixer="qmix", 
-            mixing_embed_dim=32,
+            _enable_learner_api=False,
+            mixer="vdn", 
+            # mixing_embed_dim=32,
             double_q=True, 
+            grad_clip=20.0, 
             
-            # 모델 설정: CustomCNNGRU 사용
+            # Custom CNN+GRU 모델 설정
             model={
                 "custom_model": "custom_cnn_gru",
                 "custom_model_config": {
                     "fc_size": args.fc_size 
                 },
-                "max_seq_len": 900, 
+                "max_seq_len": 100, 
             },
             
-            train_batch_size=32, 
-            target_network_update_freq=200,
+            train_batch_size=64, 
+            target_network_update_freq=500,
+            
             replay_buffer_config={
                 "type": "MultiAgentReplayBuffer",
-                "capacity": 5000,
+                "capacity": 100000, # MARL 환경이므로 버퍼 크기를 조금 넉넉히 늘립니다.
             },
             
-            lr=2e-4,  
+            lr=1e-4,  
             gamma=0.99,
-        )
-        .training(
-        mixer="qmix", 
-        mixing_embed_dim=32,
-        double_q=True, 
-        grad_clip=20.0, 
-        
-        lr=5e-5, 
-        
-        target_network_update_freq=1000, 
-        
-        train_batch_size=64, 
-        
-        model={
-            "custom_model": "custom_cnn_gru",
-            "custom_model_config": {"fc_size": args.fc_size},
-            "max_seq_len": 900,
-        },
-    )
-        .evaluation(
-            evaluation_interval=10,          # 10 Iteration마다 평가 실행
-            evaluation_duration=5,          # 평가 시 5 에피소드 진행
-            evaluation_duration_unit="episodes",
-            evaluation_config={
-                "explore": False,           # 평가 시에는 Greedy하게 행동
-            },
         )
         .exploration(
             exploration_config={
                 "type": "EpsilonGreedy",
                 "initial_epsilon": 1.0,
-                "final_epsilon": 0.05,       
-                "epsilon_timesteps": 10_000_000, 
+                "final_epsilon": 0.01,       
+                "epsilon_timesteps": 5_000_000, 
             }
+        )
+        .evaluation(
+            evaluation_interval=10,          # 10 Iteration마다 평가 실행
+            evaluation_duration=20,          # 평가 시 5 에피소드 진행
+            evaluation_duration_unit="episodes",
+            evaluation_config={
+                "explore": False,           # 평가 시에는 Greedy하게 행동
+            },
         )
         .callbacks(lambda: GifCallbacks(out_dir=os.path.join(local_log_dir, experiment_name, "gifs")))
         .resources(num_gpus=1 if torch.cuda.is_available() else 0)
@@ -155,12 +138,14 @@ if __name__ == "__main__":
     tune.run(
         "QMIX",
         name=experiment_name,
-        stop={"timesteps_total": 20_000_000},
+        stop={"timesteps_total": 10_000_000},
         local_dir=local_log_dir,
         metric="evaluation/custom_metrics/success_mean",
         mode="max",
         checkpoint_freq=500,
         checkpoint_at_end=True,
+        keep_checkpoints_num=2,
+        checkpoint_score_attr="evaluation/custom_metrics/success_mean",
         config=config.to_dict(),
         callbacks=[
             WandbLoggerCallback(
