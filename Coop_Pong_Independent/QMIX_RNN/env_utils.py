@@ -9,11 +9,7 @@ from FrameStackWrapper import FrameStackWrapper
 MAX_CYCLES = 900
 
 class FixedParallelPettingZooEnv(MultiAgentEnv):
-    """
-    [Final Fix]
-    Observation Space를 (84, 168, 1)로 정의했으므로,
-    실제 step()과 reset()에서 들어오는 (84, 168) 데이터를 (84, 168, 1)로 변환해서 반환해야 합니다.
-    """
+
     def __init__(self, pettingzoo_env):
         super().__init__()
         self.env = pettingzoo_env
@@ -53,11 +49,6 @@ class FixedParallelPettingZooEnv(MultiAgentEnv):
             self.screen_height = 280.0
 
     def _process_obs(self, obs_dict):
-        """
-        관측 데이터가 2차원(H, W)인 경우 (H, W, 1)로 차원을 확장합니다.
-        SuperSuit 래퍼가 실제 데이터 변환을 누락해 (H, W, 3)의 RGB 데이터가 
-        들어올 경우를 대비해 강제로 Grayscale(H, W, 1)로 변환합니다.
-        """
         for agent_id, obs in obs_dict.items():
             if isinstance(obs, np.ndarray):
                 # 1. 2차원 흑백 데이터 (84, 84)가 정상적으로 들어온 경우 -> (84, 84, 1)
@@ -79,13 +70,11 @@ class FixedParallelPettingZooEnv(MultiAgentEnv):
 
     def reset(self, *, seed=None, options=None):
         obs, infos = self.env.reset(seed=seed, options=options)
-        # [수정] 데이터 차원 보정 후 반환
         return self._process_obs(obs), infos
 
     def step(self, action_dict):
         obs, rewards, terms, truncs, infos = self.env.step(action_dict)
         
-        # [수정] 데이터 차원 보정
         obs = self._process_obs(obs)
         
         terms["__all__"] = any(terms.values())
@@ -109,7 +98,7 @@ def env_creator(config=None):
     # 3. Reward Shaping
     # env = RewardShapingWrapper(env)
 
-    # 4. Frame Stacking (여기서 3을 썼으므로 3채널이 됩니다)
+    # 4. Frame Stacking 
     # env = FrameStackWrapper(env, num_stack=3)
 
     # 5. RLLib 포장
