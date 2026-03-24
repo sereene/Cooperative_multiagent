@@ -114,3 +114,125 @@ class CustomCNNGRU(RecurrentNetwork, nn.Module):
 
     def value_function(self):
         return self._value_out
+    
+
+import torch.nn.functional as F
+import numpy as np
+
+import torch
+import torch.nn as nn
+import numpy as np
+
+class CustomImageQMixer(nn.Module):
+    def __init__(self, n_agents, state_shape, mixing_embed_dim):
+        super(CustomImageQMixer, self).__init__()
+
+        self.n_agents = n_agents
+        self.embed_dim = mixing_embed_dim
+        
+        # RLlib이 주는 Flatten된 원본 State의 길이 (예: 84*84*3*N)
+        self.state_dim = int(np.prod(state_shape))
+
+        # ==========================================
+        # [추가됨] 1. 이미지 복원을 위한 차원 설정 
+        # ==========================================
+        # RGB(3채널) 대신 흑백(1채널) 사용 시 아래와 같이 수정
+        self.obs_shape = (84, 84, 1) # H, W, C
+        
+        # 만약 환경에서 (84, 84)처럼 2차원으로만 준다면 아래 로직으로 에러 방지
+        if len(self.obs_shape) == 3:
+            self.input_h, self.input_w, self.input_channels = self.obs_shape
+        else:
+            self.input_h, self.input_w = self.obs_shape
+            self.input_channels = 1
+
+        # ==========================================
+        # [추가됨] 2. 첫 번째 에이전트 화면용 CNN 
+        # ==========================================
+        self.state_cnn = nn.Sequential(
+            nn.Conv2d(self.input_channels, 32, kernel_size=8, stride=4),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1),
+            nn.ReLU()
+        )
+
+        # CNN을 거친 후의 1D 피처 크기 계산
+        dummy = torch.zeros(1, self.input_channels, self.input_h, self.input_w)
+        with torch.no_grad():
+            cnn_out_dim = self.state_cnn(dummy).numel()
+
+        # CNN 피처를 받아서 하이퍼네트워크에 넘겨줄 최종 임베딩 차원 축소
+        self.state_emb_dim = 128
+        self.state_fc = nn.Sequential(
+            nn.Linear(cnn_out_dim, self.state_emb_dim),
+            nn.ReLU()
+        )
+
+        # ==========================================
+        # 3. 원본 하이퍼네트워크 구조 (입력만 state_dim -> state_emb_dim으로 변경)
+        # ==========================================
+        self.hyper_w_1 = nn.Linear(self.state_emb_dim, self.embed_dim * self.n_agents)
+        self.hyper_w_final = nn.Linear(self.state_emb_dim, self.embed_dim)
+        self.hyper_b_1 = nn.Linear(self.state_emb_dim, self.embed_dim)
+        
+        self.V = nn.Sequential(
+            nn.Linear(self.state_emb_dim, self.embed_dim),
+            nn.ReLU(),
+            nn.Linear(self.embed_dim, 1),
+        )
+
+    def forward(self, agent_qs, states):
+        """Forward pass for the mixer."""
+        bs = agent_qs.size(0)
+        
+        # 1. RLlib이 주는 1차원 배열을 가져옴
+        states = states.reshape(-1, self.state_dim).float()
+
+        # 픽셀값(0~255)이 들어올 경우 정규화 (0~1)
+        if states.max() > 1.0:
+            states = states / 255.0
+
+        # ==========================================
+        # [추가됨] 2. 이미지 차원 복원 및 중복 제거(Slicing)
+        # ==========================================
+        # [B*T, N, H, W, C] 로 복원
+        x = states.view(-1, self.n_agents, self.input_h, self.input_w, self.input_channels)
+        
+        # 첫 번째 에이전트 화면만 추출 -> [B*T, H, W, C]
+        x = x[:, 0, :, :, :]
+        
+        # PyTorch 형식 [B*T, C, H, W] 로 변환
+        x = x.permute(0, 3, 1, 2).contiguous()
+
+        # CNN 인코더 통과
+        x = self.state_cnn(x)
+        x = x.view(x.size(0), -1)
+        state_emb = self.state_fc(x) # 최종 [B*T, state_emb_dim] 추출 완료!
+
+        # ==========================================
+        # 3. 원본 믹싱 연산 (states 변수 대신 추출한 state_emb 사용)
+        # ==========================================
+        agent_qs = agent_qs.view(-1, 1, self.n_agents)
+        
+        # First layer
+        w1 = torch.abs(self.hyper_w_1(state_emb))
+        b1 = self.hyper_b_1(state_emb)
+        w1 = w1.view(-1, self.n_agents, self.embed_dim)
+        b1 = b1.view(-1, 1, self.embed_dim)
+        hidden = nn.functional.elu(torch.bmm(agent_qs, w1) + b1)
+        
+        # Second layer
+        w_final = torch.abs(self.hyper_w_final(state_emb))
+        w_final = w_final.view(-1, self.embed_dim, 1)
+        
+        # State-dependent bias
+        v = self.V(state_emb).view(-1, 1, 1)
+        
+        # Compute final output
+        y = torch.bmm(hidden, w_final) + v
+        
+        # Reshape and return
+        q_tot = y.view(bs, -1, 1)
+        return q_tot

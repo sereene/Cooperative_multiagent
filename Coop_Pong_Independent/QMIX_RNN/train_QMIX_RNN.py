@@ -5,20 +5,27 @@ import torch
 import ray
 from ray import tune
 from ray.tune.registry import register_env
-from ray.rllib.algorithms.qmix import QMixConfig
 from ray.rllib.models import ModelCatalog
 from ray.air.integrations.wandb import WandbLoggerCallback
 import gymnasium as gym
 import numpy as np
+from datetime import datetime
 
 # 분리한 모듈들 import
 from models_CNNGRU import CustomCNNGRU
 from env_utils import FixedParallelPettingZooEnv, env_creator
 from callbacks_Qmix import GifCallbacks
 
+from ray.rllib.algorithms.qmix import QMixConfig
+from ray.rllib.algorithms.qmix import qmix_policy
+from models_CNNGRU import CustomImageQMixer # 작성하신 파일명에 맞게 임포트
+qmix_policy.QMixer = CustomImageQMixer
+
 # 경고 무시 및 환경변수 설정
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 os.environ["TUNE_DISABLE_STRICT_METRIC_CHECKING"] = "1"
+# Run-level timestamp for video folder (one per training launch)
+os.environ.setdefault("VIDEO_RUN_TS", datetime.now().strftime("%Y%m%d_%H%M%S"))
 
 if __name__ == "__main__":
     ray.init()
@@ -65,7 +72,7 @@ if __name__ == "__main__":
 
     current_dir = os.getcwd()
     local_log_dir = os.path.join(current_dir, "results")
-    experiment_name = f"QMIX_CoopPong_RNN_hidden{args.fc_size}_1e-4_VDN"
+    experiment_name = f"QMIX_CoopPong_RNN_hidden{args.fc_size}_5e-4_CustomQmixer"
 
     config = (
         QMixConfig()
@@ -76,7 +83,7 @@ if __name__ == "__main__":
         )
         .framework("torch")
         .rollouts(
-            num_rollout_workers=6, 
+            num_rollout_workers=4, 
             rollout_fragment_length=20, 
         )
         # [핵심] Multi-Agent 정책에 위에서 만든 Tuple 공간을 명시합니다.
@@ -107,10 +114,14 @@ if __name__ == "__main__":
             
             replay_buffer_config={
                 "type": "MultiAgentReplayBuffer",
-                "capacity": 100000, # MARL 환경이므로 버퍼 크기를 조금 넉넉히 늘립니다.
+                "capacity": 50000, # MARL 환경이므로 버퍼 크기를 조금 넉넉히 늘립니다.
             },
             
-            lr=1e-4,  
+            lr_schedule=[
+                [0, 5e-4],           # 0 스텝 시작: 5e-4
+                [4_000_000, 2e-4],   # 400만 스텝까지: 5e-4 유지
+                [10_000_000, 2e-5]   # 학습 종료 시점까지: 5e-5 유지
+            ],
             gamma=0.99,
         )
         .exploration(
@@ -129,7 +140,7 @@ if __name__ == "__main__":
                 "explore": False,           # 평가 시에는 Greedy하게 행동
             },
         )
-        .callbacks(lambda: GifCallbacks(out_dir=os.path.join(local_log_dir, experiment_name, "gifs")))
+        .callbacks(lambda: GifCallbacks(out_dir=os.path.join(local_log_dir, experiment_name, "videos")))
         .resources(num_gpus=1 if torch.cuda.is_available() else 0)
     )
 

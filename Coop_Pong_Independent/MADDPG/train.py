@@ -5,7 +5,7 @@ import torch
 import ray
 from ray import tune
 from ray.tune.registry import register_env
-from ray.rllib.algorithms.dqn import DQNConfig
+from ray.rllib.algorithms.maddpg import MADDPGConfig  
 from ray.rllib.models import ModelCatalog
 from ray.air.integrations.wandb import WandbLoggerCallback
 import gymnasium as gym
@@ -14,7 +14,7 @@ import numpy as np
 # 분리한 모듈들 import
 from models import CustomCNN
 from env_utils import FixedParallelPettingZooEnv, env_creator
-from DQN.callbacks import GifCallbacks
+from callbacks import GifCallbacks  # DQN 폴더가 아닌 현재 경로 기준으로 수정(원래 폴더 구조에 맞게 유지 필요)
 
 # 경고 무시 및 환경변수 설정
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -26,10 +26,10 @@ if __name__ == "__main__":
 
     # Argument Parser 설정
     parser = argparse.ArgumentParser()
-    parser.add_argument("--fc_size", type=int, default=512, help="FC layer hidden size")
+    parser.add_argument("--fc_size", type=int, default=256, help="FC layer hidden size")
     args = parser.parse_args()
 
-    env_name = "cooperative_pong_independent_DoubleDQN"
+    env_name = "cooperative_pong_independent_MADDPG" # [변경] 환경 이름 명시 변경
     register_env(env_name, lambda cfg: env_creator(cfg))
     
     tmp_env = env_creator({})
@@ -37,23 +37,23 @@ if __name__ == "__main__":
     act_space = tmp_env.action_space
     tmp_env.close()
 
-    # [변경] Independent Policies 설정
+    # Independent Policies 설정
     # paddle_0과 paddle_1 각각에 대해 별도의 정책 정의
     policies = {
-        "paddle_0": (None, obs_space, act_space, {}),
-        "paddle_1": (None, obs_space, act_space, {}),
+    "paddle_0": (None, obs_space, act_space, {"agent_id": 0}),
+    "paddle_1": (None, obs_space, act_space, {"agent_id": 1}),
     }
 
-    # [변경] Policy Mapping 함수: 에이전트 ID가 그대로 정책 이름이 됨
+    # Policy Mapping 함수: 에이전트 ID가 그대로 정책 이름이 됨
     def policy_mapping_fn(agent_id, *args, **kwargs): 
         return agent_id
 
     current_dir = os.getcwd()
     local_log_dir = os.path.join(current_dir, "results")
-    experiment_name = f"DoubleDQN_CoopPong_Independent_CNN_noRewardShaping_customstack3_fc{args.fc_size}"
+    experiment_name = f"MADDPG_CoopPong_Independent_CNN_noRewardShaping_customstack3_fc{args.fc_size}"
 
     config = (
-        DQNConfig()
+        MADDPGConfig()
         .rl_module(_enable_rl_module_api=False)
         .training(_enable_learner_api=False)
         .environment(env=env_name, clip_actions=True, disable_env_checking=True)
@@ -61,40 +61,22 @@ if __name__ == "__main__":
         .rollouts(
             num_rollout_workers=10,
             rollout_fragment_length=16, 
-            compress_observations=False  #stack 문제 원인 후보
+            compress_observations=False  
         )
         .training(
             model={
                 "custom_model": "custom_cnn",
-                
                 "custom_model_config": {
                     "fc_size": args.fc_size 
                 },
             },
-
-            # --- Double DQN Specifics ---
-            double_q=True, 
-            dueling=True, 
-            num_atoms=1,
-            noisy=False,
-            
             replay_buffer_config={
                 "type": "MultiAgentReplayBuffer",
                 "capacity": 50_000, 
             },
-            
             n_step=1,
-            target_network_update_freq=5000, # 1만 스텝마다 타겟 업데이트 (4)
             train_batch_size=256,
-            
-            # lr_schedule=[
-            #     [0, 5e-5],          # 시작
-            #     [3_000_000, 5e-5],  # 300만 스텝까지는 유지 (초반 학습 가속)
-            #     [5_000_000, 1e-5],  # 500만 스텝까지 서서히 감소
-            #     [10_000_000, 5e-7], # 끝날 때는 아주 낮게
-            # ],
-
-            lr=1e-4,  
+            lr=5e-5,  
             gamma=0.99,
         )
         .exploration(
@@ -109,7 +91,6 @@ if __name__ == "__main__":
         .multi_agent(
             policies=policies,
             policy_mapping_fn=policy_mapping_fn,
-            # [변경] 두 정책 모두 학습 대상에 포함
             policies_to_train=["paddle_0", "paddle_1"],
         )
         .evaluation(
@@ -122,10 +103,11 @@ if __name__ == "__main__":
 
     print(f"### Training Logs will be saved at: {local_log_dir} ###")
 
+    # [변경] 알고리즘을 MADDPG로 실행
     tune.run(
-        "DQN",
+        "MADDPG",
         name=experiment_name,
-        stop={"timesteps_total": 25_000_000},
+        stop={"timesteps_total": 10_000_000},
         local_dir=local_log_dir,
         metric="evaluation/custom_metrics/success_mean",
         mode="max",
@@ -136,13 +118,11 @@ if __name__ == "__main__":
         config=config.to_dict(),
         callbacks=[
             WandbLoggerCallback(
-                project="cooperative_pong_multiagent_independent", # WandB 프로젝트명 변경 권장
-                group="dqn_experiments",
+                project="cooperative_pong_multiagent_independent", 
+                group="maddpg_experiments", 
                 job_type="training",
                 name=experiment_name,
                 log_config=True
             )
         ]
     )
-
-    
